@@ -1,6 +1,14 @@
 use num::Integer;
 use rand::Rng;
 
+/// Generates a random vector of `n` values in [0, `range_size`].
+/// This can be used to generate random queries.
+pub fn gen_queries(n: usize, range_size: usize) -> Vec<usize> {
+    let mut rng = rand::rng();
+    let v: Vec<usize> = (0..n).map(|_x| rng.random_range(0..(range_size))).collect();
+
+    v
+}
 /// Generates a random strictly increasing sequence of `n` values up to `u`.
 pub fn gen_strictly_increasing_sequence(n: usize, u: usize) -> Vec<usize> {
     if u == n {

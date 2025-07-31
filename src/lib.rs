@@ -10,6 +10,9 @@ pub use bitvector::{BitBoxed, BitSlice, BitSliceWithOffset, BitVec};
 pub mod bitfield;
 pub use bitfield::{BitField, BitFieldBoxed, BitFieldSlice};
 
+pub mod darray;
+pub use darray::DArray;
+
 pub mod gen_sequences;
 
 pub mod utils;
@@ -25,4 +28,66 @@ pub trait AccessBin {
     /// # Safety
     /// Calling this method with an out-of-bounds index is undefined behavior.
     unsafe fn get_unchecked(&self, i: usize) -> bool;
+}
+
+/// A trait for the support of `rank` query over the binary alphabet.
+pub trait RankBin {
+    /// Returns the number of zeros in the indexed sequence up to
+    /// position `i` excluded.
+    #[inline]
+    fn rank0(&self, i: usize) -> Option<usize> {
+        if let Some(k) = self.rank1(i) {
+            return Some(i - k);
+        }
+
+        None
+    }
+
+    /// Returns the number of ones in the indexed sequence up to
+    /// position `i` excluded.
+    fn rank1(&self, i: usize) -> Option<usize>;
+
+    /// Returns the number of ones in the indexed sequence up to
+    /// position `i` excluded. `None` if the position is out of bound.
+    ///
+    /// # Safety
+    /// Calling this method with an out-of-bounds index is undefined behavior.
+    unsafe fn rank1_unchecked(&self, i: usize) -> usize;
+
+    /// Returns the number of zeros in the indexed sequence up to
+    /// position `i` excluded.
+    ///
+    /// # Safety
+    /// Calling this method with an out-of-bounds index is undefined behavior.
+    #[inline]
+    unsafe fn rank0_unchecked(&self, i: usize) -> usize {
+        i - unsafe { self.rank1_unchecked(i) }
+    }
+
+    fn n_zeros(&self) -> usize;
+}
+
+/// A trait for the support of `select` query over the binary alphabet.
+pub trait SelectBin {
+    /// Returns the position of the `i+1`-th occurrence of a bit set to `1`.
+    /// Returns `None` if there is no such position.
+    fn select1(&self, i: usize) -> Option<usize>;
+
+    /// Returns the position of the `i+1`-th occurrence of a bit set to `1`.
+    ///
+    /// # Safety
+    /// This method doesn't check that such element exists
+    /// Calling this method with an i >= maximum rank1 is undefined behaviour.
+    unsafe fn select1_unchecked(&self, i: usize) -> usize;
+
+    /// Returns the position of the `i+1`-th occurrence of a bit set to `0`.
+    /// Returns `None` if there is no such position.
+    fn select0(&self, i: usize) -> Option<usize>;
+
+    /// Returns the position of the `i+1`-th occurrence of a bit set to  `0`.
+    ///
+    /// # Safety
+    /// This method doesnt check that such element exists
+    /// Calling this method with an `i >= maximum rank0` is undefined behaviour.
+    unsafe fn select0_unchecked(&self, i: usize) -> usize;
 }

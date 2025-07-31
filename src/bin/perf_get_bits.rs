@@ -1,7 +1,8 @@
+use mem_dbg::*;
+
 use std::hint::black_box;
 use toolkit::AccessBin;
 use toolkit::gen_sequences::gen_strictly_increasing_sequence;
-
 const N_RUNS: usize = 500;
 
 fn main() {
@@ -9,6 +10,8 @@ fn main() {
     let v = gen_strictly_increasing_sequence(n_bits / 2, n_bits);
 
     let bv = toolkit::bitvector::BitVec::from_iter(v);
+
+    let _ = bv.mem_dbg(DbgFlags::empty());
 
     let mut timings = toolkit::utils::TimingQueries::new(N_RUNS, n_bits);
 
@@ -63,7 +66,7 @@ fn main() {
 
     for bit_len in 1..=64 {
         println!(
-            "{bit_len:>2} bits: {:.2} ns, {:.2} ns",
+            "Sequential: {bit_len:>2} bits: {:.2} ns, Sequential with iterator: {:.2} ns",
             t[bit_len], t_i[bit_len]
         );
     }

@@ -17,6 +17,7 @@
 use crate::AccessBin;
 use crate::utils::compute_mask;
 
+use mem_dbg::*;
 use serde::{Deserialize, Serialize};
 
 /// A resizable, growable, and mutable bit vector.
@@ -27,7 +28,7 @@ pub type BitSlice<'a> = BitVector<&'a [u64]>;
 pub type BitBoxed = BitVector<Box<[u64]>>;
 
 /// Implementation of an immutable bit vector.
-#[derive(Default, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Default, Clone, Serialize, Deserialize, Eq, PartialEq, MemSize, MemDbg)]
 pub struct BitVector<V: AsRef<[u64]>> {
     data: V,
     n_bits: usize,
@@ -529,7 +530,7 @@ where
     ///  implementation `impl<T> From<T> for T>` provided by the standard library when `S == D`.
     ///  Instead, we expose a `convert_into` method to handle the conversion explicitly without ambiguity.
 
-    pub fn convert_into<D>(self) -> BitVector<D>
+    pub fn convert_into<D>(&self) -> BitVector<D>
     where
         D: AsRef<[u64]> + From<Vec<u64>>,
     {
@@ -1039,7 +1040,7 @@ where
         T: IntoIterator<Item = V>,
         <V as TryInto<usize>>::Error: std::fmt::Debug,
     {
-        BitVector::<Vec<u64>>::from_iter(iter).into()
+        BitVector::<Vec<u64>>::from_iter(iter).convert_into()
     }
 }
 
@@ -1168,7 +1169,7 @@ impl<'a, const BIT: bool> Iterator for BitVectorBitPositionsIter<'a, BIT> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        dbg!(self.cur_position, self.bs.offset);
+        //dbg!(self.cur_position, self.bs.offset);
         if self.cur_position >= self.bs.n_bits {
             return None;
         }

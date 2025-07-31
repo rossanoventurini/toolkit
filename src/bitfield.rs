@@ -1,6 +1,7 @@
 use crate::bitvector::{BitBoxed, BitVector};
 use crate::utils::compute_mask;
 
+use mem_dbg::*;
 use serde::{Deserialize, Serialize};
 
 /// A resizable, growable, and mutable bit field vector.
@@ -17,7 +18,7 @@ pub type BitFieldBoxed = BitField<Box<[u64]>>;
 ///
 /// TODO: add methods to modify bits or append new values, an many more.
 /// TODO: add iterators for iterating over the values
-#[derive(Default, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Default, Clone, Serialize, Deserialize, Eq, PartialEq, MemSize, MemDbg)]
 pub struct BitField<V: AsRef<[u64]>> {
     /// The underlying bit vector storing the packed values
     bitvector: BitVector<V>,
