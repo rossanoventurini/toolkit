@@ -14,6 +14,9 @@ pub type BitFieldBoxed = BitField<Box<[u64]>>;
 /// This is useful for storing sequences of integers that can be represented with
 /// fewer than 64 bits each, providing space efficiency.
 ///
+///
+/// TODO: add methods to modify bits or append new values, an many more.
+/// TODO: add iterators for iterating over the values
 #[derive(Default, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct BitField<V: AsRef<[u64]>> {
     /// The underlying bit vector storing the packed values
@@ -144,7 +147,7 @@ impl<D: AsRef<[u64]>, V: AsRef<[u64]> + Default + From<Vec<u64>>> From<D> for Bi
         let mask = compute_mask(field_width as usize);
 
         // For the special case where all values are 0 (field_width = 0),
-        // we create a BitVector with one bit per value set to 0
+        // we create a BitVector with only one bit set to 0
         let total_bits = if field_width == 0 {
             1 // Use 1 bit for all the values, set to 0
         } else {
