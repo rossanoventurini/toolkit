@@ -9,15 +9,14 @@
 //! For both data structures, it is possible to iterate over bits or positions of bits
 //! set either to zero or one.
 
-// pub mod bitfield;
-// pub mod bitvector_collection;
-
 // TODO:
 // - add CacheLine-based bit vectors
 // - create a BitBoxed with fixed size (with_zeros() or with_ones())
 // - add a function to get a BitSlice from a starting word of a given bitlength
 
 use crate::AccessBin;
+use crate::utils::compute_mask;
+
 use serde::{Deserialize, Serialize};
 
 /// A resizable, growable, and mutable bit vector.
@@ -27,49 +26,11 @@ pub type BitSlice<'a> = BitVector<&'a [u64]>;
 /// Bit operations on a boxed slice of u64, immutable or mutable but not growable bit vector.
 pub type BitBoxed = BitVector<Box<[u64]>>;
 
-const GAMMA_BITS: usize = 10;
-const GAMMA_TABLE: [(u16, u8); 1 << GAMMA_BITS] = fill_gamma_table::<{ 1 << GAMMA_BITS }>();
-
-/// Filling Gamma Table at compile time.
-const fn fill_gamma_table<const SIZE: usize>() -> [(u16, u8); SIZE] {
-    let mut table = [(0, 0_u8); SIZE];
-    table[0] = (0, GAMMA_BITS as u8 + 1);
-    let mut i = 1;
-    while i < SIZE {
-        let l = i.trailing_zeros();
-        let gamma_len = 2 * l + 1; // Length of gamma code
-
-        if gamma_len != 0 && gamma_len > GAMMA_BITS as u32 {
-            table[i] = (0, l as u8);
-            i += 1;
-            continue;
-        }
-        let mask = (1 << l) - 1;
-        let v = (1_u64 << l) | ((i as u64 >> (l + 1)) & mask);
-
-        table[i] = (v as u16, gamma_len as u8);
-        i += 1;
-    }
-
-    table
-}
-
 /// Implementation of an immutable bit vector.
 #[derive(Default, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct BitVector<V: AsRef<[u64]>> {
     data: V,
     n_bits: usize,
-}
-
-// A function that returns a u64 with the first `bits` set to 1.
-// UB if `bits` > 64
-#[inline]
-unsafe fn compute_mask(bits: usize) -> u64 {
-    if bits == 0 {
-        0
-    } else {
-        u64::MAX >> (64 - bits)
-    }
 }
 
 impl<V: AsRef<[u64]>> BitVector<V> {
@@ -84,7 +45,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::{BitSlice, BitVec};
+    /// use toolkit::{BitSlice, BitVec};
     ///
     /// let data = vec![0, 2, 3, 4, 5];
     /// let n_bits = data.len() * 64;
@@ -110,7 +71,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::{BitVec, BitSlice, AccessBin};
+    /// use toolkit::{BitVec, BitSlice, AccessBin};
     ///
     /// let v = vec![0,2,3,4,5];
     /// let bv: BitVec = v.into_iter().collect();
@@ -151,7 +112,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::{BitVec};
+    /// use toolkit::{BitVec};
     ///
     /// let v = vec![0,2,3,4,5];
     /// let bv: BitVec = v.into_iter().collect();
@@ -189,7 +150,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// Returns [`None`] if `index` is out of bounds or if there is no one after index.
     /// # Examples
     /// ```
-    /// use utils::{BitVec, AccessBin};
+    /// use toolkit::{BitVec, AccessBin};
     ///
     /// let v = vec![0,2,3,4,5, 124, 1023, 1045];
     /// let bv: BitVec = v.into_iter().collect();
@@ -217,7 +178,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     pub unsafe fn next_one_unchecked(&self, index: usize) -> usize {
         // SAFETY: index is ok due to the above check
 
-        Self::next_bit_slice_unchecked::<true>(self.data.as_ref(), index, self.n_bits)
+        unsafe { Self::next_bit_slice_unchecked::<true>(self.data.as_ref(), index, self.n_bits) }
     }
 
     #[inline]
@@ -242,7 +203,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     pub unsafe fn next_zero_unchecked(&self, index: usize) -> usize {
         // SAFETY: index is ok due to the above check
 
-        Self::next_bit_slice_unchecked::<false>(self.data.as_ref(), index, self.n_bits)
+        unsafe { Self::next_bit_slice_unchecked::<false>(self.data.as_ref(), index, self.n_bits) }
     }
 
     // Private function that returns the position of the next 1 bit in the bit vector starting
@@ -282,7 +243,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
             unsafe { *data.get_unchecked(last_block) }
         } else {
             unsafe { !*data.get_unchecked(last_block) }
-        } & unsafe { compute_mask(n_bits & 63) };
+        } & compute_mask(n_bits & 63);
 
         if w != 0 {
             return (last_block << 6) + w.trailing_zeros() as usize;
@@ -291,54 +252,12 @@ impl<V: AsRef<[u64]>> BitVector<V> {
         n_bits
     }
 
-    #[inline]
-    #[must_use]
-    pub unsafe fn get_gamma_unchecked(&self, index: usize) -> (u64, usize) {
-        Self::get_gamma_slice_unchecked(self.data.as_ref(), index, self.n_bits)
-    }
-
-    #[inline]
-    #[must_use]
-    unsafe fn get_gamma_slice_unchecked(data: &[u64], index: usize, n_bits: usize) -> (u64, usize) {
-        let pos = unsafe { Self::next_bit_slice_unchecked::<true>(data, index, n_bits) } + 1;
-        let l = pos - index - 1;
-
-        // SAFETY: if pos was Some, then l is in bounds
-        let v = (1_u64 << l) | unsafe { Self::get_bits_slice(data, pos, l) };
-        (v - 1, pos + l)
-    }
-
-    #[inline]
-    #[must_use]
-    unsafe fn get_gamma_with_table_slice_unchecked(
-        data: &[u64],
-        index: usize,
-        n_bits: usize,
-    ) -> (u64, usize) {
-        let bits = unsafe { Self::get_bits_slice(data, index, GAMMA_BITS) };
-        if bits == 0 {
-            return unsafe { Self::get_gamma_slice_unchecked(data, index, n_bits) };
-        }
-
-        let (v, d) = GAMMA_TABLE[bits as usize];
-
-        if v != 0 {
-            (v as u64 - 1, index + d as usize)
-        } else {
-            let l = d as usize;
-            let pos = index + l + 1;
-            let v = (1_u64 << l) | unsafe { Self::get_bits_slice(data, pos, l) };
-            (v - 1, pos + l)
-        }
-    }
-
     // Private function to decode bits at a given index on a slice.
     // The function does not check bounds while accessing data.
     #[inline]
     #[must_use]
     unsafe fn get_bits_slice(data: &[u64], index: usize, len: usize) -> u64 {
-        (unsafe { Self::get_bits_unmasked_slice(data, index, len) })
-            & (unsafe { compute_mask(len) })
+        (unsafe { Self::get_bits_unmasked_slice(data, index, len) }) & (compute_mask(len))
     }
 
     // Private function to decode a bit at a given index on a slice. The function does not
@@ -349,7 +268,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
         let word = index >> 6;
         let pos_in_word = index & 63;
 
-        (*data.get_unchecked(word) >> pos_in_word) & 1 != 0
+        (unsafe { *data.get_unchecked(word) } >> pos_in_word) & 1 != 0
     }
 
     /// Gets a whole 64-bit word from the bit vector at index `i` in the underlying vector of u64.
@@ -357,7 +276,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
+    /// use toolkit::BitVec;
     ///
     /// let v = vec![0,2,3,4,5];
     /// let bv: BitVec = v.into_iter().collect();
@@ -375,7 +294,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     #[must_use]
     #[inline]
     pub unsafe fn get_word_unchecked(&self, i: usize) -> u64 {
-        *self.data.as_ref().get_unchecked(i)
+        unsafe { *self.data.as_ref().get_unchecked(i) }
     }
 
     /// Returns a non-consuming iterator over positions of bits set to 1 in the bit vector.
@@ -383,7 +302,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
+    /// use toolkit::BitVec;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
     /// let bv: BitVec = vv.iter().copied().collect();
@@ -403,7 +322,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
+    /// use toolkit::BitVec;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
     /// let bv: BitVec = vv.iter().copied().collect();
@@ -423,8 +342,8 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
-    /// use utils::gen_sequences::negate_vector;
+    /// use toolkit::BitVec;
+    /// use toolkit::gen_sequences::negate_vector;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
     /// let bv: BitVec = vv.iter().copied().collect();
@@ -452,7 +371,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
+    /// use toolkit::BitVec;
     ///
     /// let v = vec![0,2,3,5];
     /// let bv: BitVec = v.into_iter().collect();
@@ -475,12 +394,6 @@ impl<V: AsRef<[u64]>> BitVector<V> {
         }
     }
 
-    pub fn iter_gamma(&self) -> BitVectorGammaIter {
-        BitVectorGammaIter::new(unsafe {
-            BitSliceWithOffset::from_raw_parts(self.data.as_ref(), self.n_bits, 0)
-        })
-    }
-
     /// Checks if the bit vector is empty.
     ///
     /// # Returns
@@ -490,7 +403,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
+    /// use toolkit::BitVec;
     ///
     /// let v = vec![0,2,3,4,5];
     /// let bv: BitVec = v.into_iter().collect();
@@ -511,7 +424,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
+    /// use toolkit::BitVec;
     ///
     /// let v = vec![0,2,3,4,5];
     /// let bv: BitVec = v.into_iter().collect();
@@ -528,7 +441,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
+    /// use toolkit::BitVec;
     ///
     /// let v = vec![0,2,3,4,5];
     /// let bv: BitVec = v.into_iter().collect();
@@ -549,7 +462,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
+    /// use toolkit::BitVec;
     ///
     /// let v = vec![0,2,3,4,5];
     /// let bv: BitVec = v.into_iter().collect();
@@ -569,7 +482,7 @@ impl<V: AsRef<[u64]>> AccessBin for BitVector<V> {
     ///
     /// # Examples
     /// ```
-    /// use utils::{BitVec, AccessBin};
+    /// use toolkit::{BitVec, AccessBin};
     ///
     /// let v = vec![0,2,3,4,5];
     /// let bv: BitVec = v.into_iter().collect();
@@ -593,7 +506,7 @@ impl<V: AsRef<[u64]>> AccessBin for BitVector<V> {
     ///
     /// # Examples
     /// ```
-    /// use utils::{BitVec, AccessBin};
+    /// use toolkit::{BitVec, AccessBin};
     ///
     /// let v = vec![0,2,3,4,5];
     /// let bv: BitVec = v.into_iter().collect();
@@ -603,6 +516,26 @@ impl<V: AsRef<[u64]>> AccessBin for BitVector<V> {
     #[inline]
     unsafe fn get_unchecked(&self, index: usize) -> bool {
         unsafe { Self::get_bit_slice(self.data.as_ref(), index) }
+    }
+}
+
+impl<S> BitVector<S>
+where
+    S: AsRef<[u64]>,
+{
+    /// Converts the `BitVector` into a new `BitVector` with a different data type.
+    ///
+    /// We do not implement `From<BitVector<S>> for BitVector<D>` because it would conflict with the blanket
+    ///  implementation `impl<T> From<T> for T>` provided by the standard library when `S == D`.
+    ///  Instead, we expose a `convert_into` method to handle the conversion explicitly without ambiguity.
+
+    pub fn convert_into<D>(self) -> BitVector<D>
+    where
+        D: AsRef<[u64]> + From<Vec<u64>>,
+    {
+        let data = self.data.as_ref().to_vec().into();
+        let n_bits = self.n_bits;
+        BitVector { data, n_bits }
     }
 }
 
@@ -616,7 +549,7 @@ impl<V: AsRef<[u64]> + AsMut<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::{BitVec, BitBoxed, AccessBin};
+    /// use toolkit::{BitVec, BitBoxed, AccessBin};
     ///
     /// let mut bv = BitVec::with_capacity(2);
     /// bv.push(true);
@@ -656,7 +589,7 @@ impl<V: AsRef<[u64]> + AsMut<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::{BitVec, BitBoxed};
+    /// use toolkit::{BitVec, BitBoxed};
     ///
     /// let mut bv = BitVec::with_zeros(5);
     /// bv.set_bits(0, 3, 0b101); // Sets bits 0 to 2 to 101
@@ -678,7 +611,7 @@ impl<V: AsRef<[u64]> + AsMut<[u64]>> BitVector<V> {
         }
 
         // SAFETY: len <= 64 checked above
-        let mask = unsafe { compute_mask(len) };
+        let mask = compute_mask(len);
         let word = index >> 6;
         let pos_in_word = index & 63;
 
@@ -699,7 +632,7 @@ impl BitVector<Vec<u64>> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
+    /// use toolkit::BitVec;
     ///
     /// let bv = BitVec::new();
     /// assert_eq!(bv.len(), 0);
@@ -714,7 +647,7 @@ impl BitVector<Vec<u64>> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
+    /// use toolkit::BitVec;
     ///
     /// let bv = BitVec::new();
     /// assert_eq!(bv.len(), 0);
@@ -737,7 +670,7 @@ impl BitVector<Vec<u64>> {
     /// # Example
     ///
     /// ```
-    /// use utils::{BitVec, AccessBin};
+    /// use toolkit::{BitVec, AccessBin};
     ///
     /// let mut bv = BitVec::new();
     /// bv.push(true);
@@ -776,7 +709,7 @@ impl BitVector<Vec<u64>> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
+    /// use toolkit::BitVec;
     ///
     /// let mut bv = BitVec::with_capacity(7);
     /// bv.append_bits(0b101, 3);  // appends 101
@@ -849,7 +782,7 @@ impl BitVector<Vec<u64>> {
     /// # Examples
     ///
     /// ```
-    /// use utils::{BitVec, AccessBin};
+    /// use toolkit::{BitVec, AccessBin};
     ///
     /// let mut bv = BitVec::with_capacity(10);
     /// bv.extend_with_zeros(10);
@@ -871,7 +804,7 @@ impl BitVector<Vec<u64>> {
     /// # Examples
     ///
     /// ```
-    /// use utils::{BitVec, AccessBin};
+    /// use toolkit::{BitVec, AccessBin};
     ///
     /// let mut bv = BitVec::with_capacity(100);
     /// bv.extend_with_ones(100);
@@ -890,18 +823,6 @@ impl BitVector<Vec<u64>> {
         self.n_bits += n;
     }
 
-    /// Encode `v` with Elias Gamma encoding. We assume that `v` is a non-negative integer (i.e., `v` can be zero).
-    /// The largest possible value for `v` is `u64::MAX - 1`.
-    #[inline]
-    pub fn append_gamma(&mut self, v: u64) {
-        let v = v + 1;
-
-        let n_bits = (64 - v.leading_zeros()) as usize;
-        let hb = 1 << (n_bits - 1);
-        self.append_bits(hb, n_bits);
-        self.append_bits(v ^ hb, n_bits - 1);
-    }
-
     /// Shrinks the underlying vector of 64-bit words to fit the actual size of the bit vector.
     pub fn shrink_to_fit(&mut self) {
         self.data.shrink_to_fit();
@@ -914,7 +835,7 @@ impl<V: AsRef<[u64]> + From<Vec<u64>>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitBoxed;
+    /// use toolkit::BitBoxed;
     ///
     /// let bb = BitBoxed::with_zeros(5);
     /// assert_eq!(bb.len(), 5);
@@ -936,7 +857,7 @@ impl<V: AsRef<[u64]> + From<Vec<u64>>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitBoxed;
+    /// use toolkit::BitBoxed;
     ///
     /// let bb = BitBoxed::with_ones(5);
     /// assert_eq!(bb.len(), 5);
@@ -993,7 +914,7 @@ impl Extend<bool> for BitVector<Vec<u64>> {
 /// # Examples
 ///
 /// ```
-/// use utils::{BitVec, AccessBin};
+/// use toolkit::{BitVec, AccessBin};
 ///
 /// let mut bv = BitVec::new();
 ///
@@ -1029,7 +950,7 @@ impl Extend<usize> for BitVector<Vec<u64>> {
 /// # Examples
 ///
 /// ```
-/// use utils::{AccessBin, BitVec};
+/// use toolkit::{AccessBin, BitVec};
 ///
 /// // Create a bit vector from an iterator over bool values
 /// let bv: BitVec = vec![true, false, true].into_iter().collect();
@@ -1080,7 +1001,7 @@ impl_my_prim_int![
 /// # Examples
 ///
 /// ```
-/// use utils::{AccessBin, BitVec};
+/// use toolkit::{AccessBin, BitVec};
 ///
 /// // Create a bit vector from an iterator over usize values
 /// let bv: BitVec = vec![0, 1, 3, 5].into_iter().collect();
@@ -1130,7 +1051,7 @@ where
 /// # Examples
 ///
 /// ```
-/// use utils::{BitVec,BitBoxed, AccessBin};
+/// use toolkit::{BitVec,BitBoxed, AccessBin};
 ///
 /// let mut bvm = BitVec::new();
 /// bvm.push(true);
@@ -1157,7 +1078,7 @@ impl From<BitVector<Vec<u64>>> for BitVector<Box<[u64]>> {
 /// # Examples
 ///
 /// ```
-/// use utils::{BitVec, BitBoxed, AccessBin};
+/// use toolkit::{BitVec, BitBoxed, AccessBin};
 ///
 /// let v = vec![0,2,3,4,5];
 /// let mut bv: BitBoxed = v.into_iter().collect();
@@ -1190,36 +1111,6 @@ impl From<BitVector<&[u64]>> for BitVector<Vec<u64>> {
 impl<V: AsRef<[u64]>> AsRef<BitVector<V>> for BitVector<V> {
     fn as_ref(&self) -> &BitVector<V> {
         self
-    }
-}
-
-pub struct BitVectorGammaIter<'a> {
-    bs: BitSliceWithOffset<'a>,
-    pos: usize,
-}
-
-impl<'a> BitVectorGammaIter<'a> {
-    /// Offset is needed by BitSliceWithOffset. It is the number of bits to skip in the first word before starting to read the bit vector.
-    #[must_use]
-    #[inline]
-    pub fn new(bs: BitSliceWithOffset<'a>) -> Self {
-        BitVectorGammaIter { bs, pos: 0 }
-    }
-}
-
-impl<'a> Iterator for BitVectorGammaIter<'a> {
-    type Item = u64;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.pos >= self.bs.n_bits {
-            return None;
-        }
-
-        // SAFETY: pos is in bounds
-        let (v, l) = unsafe { self.bs.get_gamma_unchecked(self.pos) };
-        self.pos = l;
-        Some(v)
     }
 }
 
@@ -1376,8 +1267,8 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
-    /// use utils::BitSliceWithOffset;
+    /// use toolkit::BitVec;
+    /// use toolkit::BitSliceWithOffset;
     ///
     /// let v = vec![0b000001010, 0b01010111000000, u64::MAX];
     ///
@@ -1421,8 +1312,8 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
-    /// use utils::BitSliceWithOffset;
+    /// use toolkit::BitVec;
+    /// use toolkit::BitSliceWithOffset;
     ///
     /// let v = vec![0b000001010, 0b01010111000000, u64::MAX];
     ///
@@ -1457,8 +1348,8 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
-    /// use utils::BitSliceWithOffset;
+    /// use toolkit::BitVec;
+    /// use toolkit::BitSliceWithOffset;
     ///
     /// let v = vec![0b000001010, 0b01010111000000, u64::MAX];
     ///
@@ -1475,18 +1366,6 @@ impl<'a> BitSliceWithOffset<'a> {
     pub unsafe fn get_bits_unchecked(&self, index: usize, len: usize) -> u64 {
         debug_assert!(index + len <= self.n_bits, "Index out of bounds");
         unsafe { BitVector::<&[u64]>::get_bits_slice(self.data.as_ref(), index + self.offset, len) }
-    }
-
-    #[inline]
-    #[must_use]
-    pub unsafe fn get_gamma_unchecked(&self, index: usize) -> (u64, usize) {
-        unsafe {
-            BitVector::<&[u64]>::get_gamma_slice_unchecked(
-                self.data.as_ref(),
-                index + self.offset,
-                self.n_bits,
-            )
-        }
     }
 
     pub fn next_one(&self, index: usize) -> Option<usize> {
@@ -1533,8 +1412,8 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
-    /// use utils::BitSliceWithOffset;
+    /// use toolkit::BitVec;
+    /// use toolkit::BitSliceWithOffset;
     ///
     /// let v = vec![0b000001010, 0b01010111000000, u64::MAX];
     ///
@@ -1555,8 +1434,8 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
-    /// use utils::BitSliceWithOffset;
+    /// use toolkit::BitVec;
+    /// use toolkit::BitSliceWithOffset;
     ///
     /// let v = vec![0b000001010, 0b01010111000000, u64::MAX];
     ///
@@ -1577,8 +1456,8 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use utils::BitVec;
-    /// use utils::gen_sequences::negate_vector;
+    /// use toolkit::BitVec;
+    /// use toolkit::gen_sequences::negate_vector;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
     /// let bv: BitVec = vv.iter().copied().collect();
@@ -1780,36 +1659,6 @@ mod tests {
     }
 
     #[test]
-    fn test_append_get_gamma() {
-        let mut bv = BitVec::new();
-        let n = 10021;
-
-        for i in 0..n {
-            bv.append_gamma(i);
-        }
-
-        let mut pos = 0;
-        for i in 0..n {
-            let (v, p) = unsafe { bv.get_gamma_unchecked(pos) };
-            pos = p;
-            assert_eq!(v, i);
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn test_gamma() {
-        let mut bv = BitVec::new();
-        for i in 0..3042 {
-            bv.append_gamma(i);
-        }
-
-        for (i, dec) in bv.iter_gamma().enumerate() {
-            assert_eq!(dec, i as u64);
-        }
-    }
-
-    #[test]
     fn test_iter_zeros() {
         let bv = BitVec::default();
         let v: Vec<usize> = bv.zeros().collect();
@@ -1860,25 +1709,6 @@ mod tests {
         let bv: BitVec = vv.iter().copied().collect();
         let v: Vec<usize> = bv.ones().collect();
         assert_eq!(v, vv);
-    }
-
-    #[test]
-    fn test_gamma_iter_on_dgaps() {
-        let v = gen_strictly_increasing_sequence(10, 100);
-
-        let _n = v.len();
-        let u = *v.last().unwrap();
-
-        let dgaps = DGaps::new(v.into_iter().map(|x| x as u64));
-
-        let mut bv: BitVec = BitVec::new();
-
-        for gap in dgaps {
-            bv.append_gamma(gap);
-        }
-
-        let sum = bv.iter_gamma().map(|gap| gap + 1).sum::<u64>() - 1; // -1 to account for the first value of the sequence which is not gapped (and thus we do not subtracted 1)
-        assert_eq!(sum, u as u64);
     }
 
     #[test]
