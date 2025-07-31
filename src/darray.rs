@@ -19,8 +19,8 @@
 //! Without this support, the query [`SelectBin::select0`] will panic.
 //!
 //! ```
-//! use qwt::DArray;
-//! use qwt::{SpaceUsage, SelectBin, RankBin};
+//! use toolkit::DArray;
+//! use toolkit::{SelectBin, RankBin};
 //!
 //! let vv: Vec<usize> = vec![0, 12, 33, 42, 55, 61, 1000];
 //! let da: DArray<false> = vv.into_iter().collect();
@@ -189,7 +189,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// # Examples
     ///
     /// ```
-    /// use qwt::{DArray, SelectBin};
+    /// use toolkit::{DArray, SelectBin};
     ///
     /// let v = vec![0,2,3,4,5];
     /// let da: DArray::<true> = v.into_iter().collect(); // <true> to support the select0 query
@@ -199,12 +199,14 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// ```
     #[must_use]
     pub fn new<V: AsRef<[u64]>>(bv: &BitVector<V>) -> Self {
-        let ones_inventories = Inventories::new(&bv);
+        let ones_inventories = Inventories::new(bv);
+
         let zeroes_inventories = if SELECT0_SUPPORT {
             Some(Inventories::new(&bv))
         } else {
             None
         };
+
         DArray {
             bv: bv.convert_into(),
             ones_inventories,
@@ -217,7 +219,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// # Examples
     ///
     /// ```
-    /// use qwt::DArray;
+    /// use toolkit::DArray;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
     /// let da: DArray = vv.iter().copied().collect();
@@ -234,7 +236,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// # Examples
     ///
     /// ```
-    /// use qwt::DArray;
+    /// use toolkit::DArray;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
     /// let da: DArray = vv.iter().copied().collect();
@@ -251,8 +253,8 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// # Examples
     ///
     /// ```
-    /// use qwt::DArray;
-    /// use qwt::perf_and_test_utils::negate_vector;
+    /// use toolkit::DArray;
+    /// use toolkit::gen_sequences::negate_vector;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
     /// let da: DArray = vv.iter().copied().collect();
@@ -274,7 +276,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// # Examples
     ///
     /// ```
-    /// use qwt::DArray;
+    /// use toolkit::DArray;
     ///
     /// let v = vec![0,2,3,5];
     /// let da: DArray = v.into_iter().collect();
@@ -297,7 +299,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// # Examples
     ///
     /// ```
-    /// use qwt::{DArray, SelectBin};
+    /// use toolkit::{DArray, SelectBin};
     ///
     /// let v = vec![0, 2, 3, 4, 5];
     /// let da: DArray<true> = v.into_iter().collect(); // <true> to support the select0 query
@@ -313,7 +315,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// # Examples
     ///
     /// ```
-    /// use qwt::{DArray, SelectBin};
+    /// use toolkit::{DArray, SelectBin};
     ///
     /// let v = vec![0, 2, 3, 4, 5];
     /// let da: DArray<true> = v.into_iter().collect(); // <true> to support the select0 query
@@ -329,7 +331,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// # Examples
     ///
     /// ```
-    /// use qwt::{DArray, SelectBin};
+    /// use toolkit::{DArray, SelectBin};
     ///
     /// let v = vec![0, 2, 3, 4, 5];
     /// let da: DArray<true> = v.into_iter().collect(); // <true> to support the select0 query
@@ -345,7 +347,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// # Examples
     ///
     /// ```
-    /// use qwt::{DArray, SelectBin};
+    /// use toolkit::{DArray, SelectBin};
     ///
     /// let v: Vec<usize> = vec![];
     /// let da: DArray<true> = v.into_iter().collect(); // <true> to support the select0 query
@@ -420,7 +422,7 @@ impl<const SELECT0_SUPPORT: bool> AccessBin for DArray<SELECT0_SUPPORT> {
     ///
     /// # Examples
     /// ```
-    /// use qwt::{DArray, AccessBin};
+    /// use toolkit::{DArray, AccessBin};
     ///
     /// let v = vec![0,2,3,4,5];
     /// let da: DArray = v.into_iter().collect();;
@@ -441,7 +443,7 @@ impl<const SELECT0_SUPPORT: bool> AccessBin for DArray<SELECT0_SUPPORT> {
     ///
     /// # Examples
     /// ```
-    /// use qwt::{DArray, AccessBin};
+    /// use toolkit::{DArray, AccessBin};
     ///
     /// let v = vec![0,2,3,4,5];
     /// let da: DArray = v.into_iter().collect();;
@@ -461,7 +463,7 @@ impl<const SELECT0_SUPPORT: bool> SelectBin for DArray<SELECT0_SUPPORT> {
     ///
     /// # Examples
     /// ```
-    /// use qwt::{DArray, SelectBin};
+    /// use toolkit::{DArray, SelectBin};
     ///
     /// let v: Vec<usize> = vec![0, 12, 33, 42, 55, 61, 1000];
     /// let da: DArray = v.into_iter().collect();
@@ -483,7 +485,7 @@ impl<const SELECT0_SUPPORT: bool> SelectBin for DArray<SELECT0_SUPPORT> {
     ///
     /// # Examples
     /// ```
-    /// use qwt::{DArray, SelectBin};
+    /// use toolkit::{DArray, SelectBin};
     ///
     /// let v: Vec<usize> = vec![0, 12, 33, 42, 55, 61, 1000];
     /// let da: DArray = v.into_iter().collect();
@@ -502,7 +504,7 @@ impl<const SELECT0_SUPPORT: bool> SelectBin for DArray<SELECT0_SUPPORT> {
     ///
     /// # Examples
     /// ```
-    /// use qwt::{DArray, SelectBin};
+    /// use toolkit::{DArray, SelectBin};
     ///
     /// let v: Vec<usize> = vec![0, 12, 33, 42, 55, 61, 1000];
     /// let da: DArray<true> = v.into_iter().collect();
@@ -527,7 +529,7 @@ impl<const SELECT0_SUPPORT: bool> SelectBin for DArray<SELECT0_SUPPORT> {
     ///
     /// # Examples
     /// ```
-    /// use qwt::{DArray, SelectBin};
+    /// use toolkit::{DArray, SelectBin};
     ///
     /// let v: Vec<usize> = vec![0, 12, 33, 42, 55, 61, 1000];
     /// let da: DArray<true> = v.into_iter().collect();
@@ -549,7 +551,7 @@ impl<const SELECT0_SUPPORT: bool> SelectBin for DArray<SELECT0_SUPPORT> {
 /// # Examples
 ///
 /// ```
-/// use qwt::{AccessBin, DArray};
+/// use toolkit::{AccessBin, DArray};
 ///
 /// // Create a bit vector from an iterator over bool values
 /// let da: DArray = vec![true, false, true].into_iter().collect();
@@ -575,7 +577,7 @@ impl<const SELECT0_SUPPORT: bool> FromIterator<bool> for DArray<SELECT0_SUPPORT>
 /// # Examples
 ///
 /// ```
-/// use qwt::{DArray, AccessBin};
+/// use toolkit::{DArray, AccessBin};
 ///
 /// // Create a [`DArray`] from an iterator over strictly increasing sequence of non-negative integer values.
 /// let da: DArray = vec![0, 1, 3, 5].into_iter().collect();

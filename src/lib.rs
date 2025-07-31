@@ -13,6 +13,10 @@ pub use bitfield::{BitField, BitFieldBoxed, BitFieldSlice};
 pub mod darray;
 pub use darray::DArray;
 
+pub mod elias_fano;
+pub use elias_fano::EliasFano;
+pub use elias_fano::EliasFanoBuilder;
+
 pub mod gen_sequences;
 
 pub mod utils;

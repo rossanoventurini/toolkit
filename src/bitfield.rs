@@ -1,3 +1,4 @@
+use crate::BitVec;
 use crate::bitvector::{BitBoxed, BitVector};
 use crate::utils::compute_mask;
 
@@ -18,7 +19,7 @@ pub type BitFieldBoxed = BitField<Box<[u64]>>;
 ///
 /// TODO: add methods to modify bits or append new values, an many more.
 /// TODO: add iterators for iterating over the values
-#[derive(Default, Clone, Serialize, Deserialize, Eq, PartialEq, MemSize, MemDbg)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, Eq, PartialEq, MemSize, MemDbg)]
 pub struct BitField<V: AsRef<[u64]>> {
     /// The underlying bit vector storing the packed values
     bitvector: BitVector<V>,
@@ -99,6 +100,47 @@ impl<V: AsRef<[u64]> + Default> BitField<V> {
     }
 }
 
+impl BitField<Vec<u64>> {
+    #[must_use]
+    pub fn with_capacity(n_vals: usize, width: u8) -> Self {
+        assert!(width <= 64, "width must be between 0 and 64");
+
+        let capacity = n_vals * width as usize;
+        Self {
+            bitvector: BitVec::with_capacity(capacity),
+            field_width: width,
+            mask: compute_mask(width as usize),
+            length: 0,
+        }
+    }
+
+    pub fn push(&mut self, value: u64) {
+        if self.field_width == 0 {
+            // Special case: if field_width is 0, we only store zeros
+            assert!(
+                value == 0,
+                "Cannot push non-zero value when field_width is 0"
+            );
+
+            if self.len() == 0 {
+                // If this is the first value, initialize the bitvector
+                self.bitvector = BitVec::with_zeros(1);
+            }
+
+            self.length += 1;
+            return;
+        }
+
+        assert!(
+            value <= self.mask,
+            "Value exceeds the maximum representable value"
+        );
+
+        self.bitvector.append_bits(value, self.field_width as usize);
+        self.length += 1;
+    }
+}
+
 impl<D: AsRef<[u64]>, V: AsRef<[u64]> + Default + From<Vec<u64>>> From<D> for BitField<V> {
     /// Creates a BitField from a slice of u64 values.
     ///
@@ -175,8 +217,68 @@ impl<D: AsRef<[u64]>, V: AsRef<[u64]> + Default + From<Vec<u64>>> From<D> for Bi
     }
 }
 
+impl<V> BitField<V>
+where
+    V: AsRef<[u64]>,
+{
+    /// Converts the `BitField` into a new `BitField` with a different data type.
+    ///
+    /// We do not implement `From<BitField<S>> for BitField<D>` because it would conflict with the blanket
+    ///  implementation `impl<T> From<T> for T>` provided by the standard library when `V == D`.
+    ///  Instead, we expose a `convert_into` method to handle the conversion explicitly without ambiguity.
+
+    pub fn convert_into<D>(&self) -> BitField<D>
+    where
+        D: AsRef<[u64]> + From<Vec<u64>>,
+    {
+        BitField::<D> {
+            bitvector: self.bitvector.convert_into(),
+            field_width: self.field_width,
+            mask: self.mask,
+            length: self.length,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_push_basic() {
+        let mut bf = BitFieldVec::new(4);
+        bf.push(1);
+        bf.push(7);
+        bf.push(15);
+        bf.push(3);
+        assert_eq!(bf.len(), 4);
+        assert_eq!(bf.get(0), Some(1));
+        assert_eq!(bf.get(1), Some(7));
+        assert_eq!(bf.get(2), Some(15));
+        assert_eq!(bf.get(3), Some(3));
+    }
+
+    #[test]
+    fn test_push_zero_width() {
+        let mut bf = BitFieldVec::new(0);
+        bf.push(0);
+        bf.push(0);
+        assert_eq!(bf.len(), 2);
+        assert_eq!(bf.get(0), Some(0));
+        assert_eq!(bf.get(1), Some(0));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_push_zero_width_nonzero_value() {
+        let mut bf = BitFieldVec::new(0);
+        bf.push(1); // panic
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_push_value_too_large() {
+        let mut bf = BitFieldVec::new(3);
+        bf.push(8); // 8 non rappresentabile con 3 bit
+    }
     use super::*;
 
     #[test]

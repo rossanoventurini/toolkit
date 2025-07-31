@@ -167,7 +167,11 @@ impl<V: AsRef<[u64]>> BitVector<V> {
         // SAFETY: index is ok due to the above check
         let res = unsafe { self.next_one_unchecked(index) };
 
-        if res < self.n_bits { Some(res) } else { None }
+        if let Some(res) = res {
+            if res < self.n_bits { Some(res) } else { None }
+        } else {
+            None
+        }
     }
 
     /// Returns the position of the next 1 bit in the bit vector starting from position `index`.
@@ -176,7 +180,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// equal to the number of bits in the bit vector. The function does not check bounds.
     #[inline]
     #[must_use]
-    pub unsafe fn next_one_unchecked(&self, index: usize) -> usize {
+    pub unsafe fn next_one_unchecked(&self, index: usize) -> Option<usize> {
         // SAFETY: index is ok due to the above check
 
         unsafe { Self::next_bit_slice_unchecked::<true>(self.data.as_ref(), index, self.n_bits) }
@@ -192,7 +196,11 @@ impl<V: AsRef<[u64]>> BitVector<V> {
         // SAFETY: index is ok due to the above check
         let res = unsafe { self.next_zero_unchecked(index) };
 
-        if res < self.n_bits { Some(res) } else { None }
+        if let Some(res) = res {
+            if res < self.n_bits { Some(res) } else { None }
+        } else {
+            None
+        }
     }
 
     /// Returns the position of the next 0 bit in the bit vector starting from position `index`.
@@ -201,9 +209,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// to the number of bits in the bit vector. The function does not check bounds.
     #[inline]
     #[must_use]
-    pub unsafe fn next_zero_unchecked(&self, index: usize) -> usize {
-        // SAFETY: index is ok due to the above check
-
+    pub unsafe fn next_zero_unchecked(&self, index: usize) -> Option<usize> {
         unsafe { Self::next_bit_slice_unchecked::<false>(self.data.as_ref(), index, self.n_bits) }
     }
 
@@ -218,10 +224,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
         data: &[u64],
         index: usize,
         n_bits: usize,
-    ) -> usize {
-        let block = index >> 6;
+    ) -> Option<usize> {
+        let mut block = index >> 6;
         let shift = index & 63;
-        let last_block = n_bits >> 6;
+        let last_block = (n_bits - 1) >> 6; //  block of the last bit
 
         let w = if BIT {
             unsafe { *data.get_unchecked(block) }
@@ -230,27 +236,24 @@ impl<V: AsRef<[u64]>> BitVector<V> {
         } >> shift;
 
         if w != 0 {
-            return index + w.trailing_zeros() as usize;
+            return Some(index + w.trailing_zeros() as usize);
         }
 
-        for (i, &w) in data[block + 1..last_block].iter().enumerate() {
-            let w = if BIT { w } else { !w };
+        block += 1;
+
+        while block <= last_block {
+            let w = if BIT {
+                unsafe { *data.get_unchecked(block) }
+            } else {
+                unsafe { !*data.get_unchecked(block) }
+            };
+
             if w != 0 {
-                return ((block + i + 1) << 6) + w.trailing_zeros() as usize;
+                return Some(((block) << 6) + w.trailing_zeros() as usize);
             }
+            block += 1;
         }
-
-        let w = if BIT {
-            unsafe { *data.get_unchecked(last_block) }
-        } else {
-            unsafe { !*data.get_unchecked(last_block) }
-        } & compute_mask(n_bits & 63);
-
-        if w != 0 {
-            return (last_block << 6) + w.trailing_zeros() as usize;
-        }
-
-        n_bits
+        None
     }
 
     // Private function to decode bits at a given index on a slice.
@@ -520,14 +523,14 @@ impl<V: AsRef<[u64]>> AccessBin for BitVector<V> {
     }
 }
 
-impl<S> BitVector<S>
+impl<V> BitVector<V>
 where
-    S: AsRef<[u64]>,
+    V: AsRef<[u64]>,
 {
     /// Converts the `BitVector` into a new `BitVector` with a different data type.
     ///
     /// We do not implement `From<BitVector<S>> for BitVector<D>` because it would conflict with the blanket
-    ///  implementation `impl<T> From<T> for T>` provided by the standard library when `S == D`.
+    ///  implementation `impl<T> From<T> for T>` provided by the standard library when `V == D`.
     ///  Instead, we expose a `convert_into` method to handle the conversion explicitly without ambiguity.
 
     pub fn convert_into<D>(&self) -> BitVector<D>
@@ -1169,7 +1172,6 @@ impl<'a, const BIT: bool> Iterator for BitVectorBitPositionsIter<'a, BIT> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        //dbg!(self.cur_position, self.bs.offset);
         if self.cur_position >= self.bs.n_bits {
             return None;
         }
@@ -1180,13 +1182,14 @@ impl<'a, const BIT: bool> Iterator for BitVectorBitPositionsIter<'a, BIT> {
             unsafe { self.bs.next_zero_unchecked(self.cur_position) }
         };
 
-        if p < self.bs.n_bits {
-            self.cur_position = p + 1;
-            Some(p)
-        } else {
-            self.cur_position = self.bs.n_bits;
-            None
+        if let Some(pos) = p {
+            if pos < self.bs.n_bits {
+                self.cur_position = pos + 1;
+                return Some(pos);
+            }
         }
+
+        None
     }
 }
 
@@ -1375,18 +1378,26 @@ impl<'a> BitSliceWithOffset<'a> {
         }
         // SAFETY: safe access due to the above checks
         let p = unsafe { self.next_one_unchecked(index) };
-
-        if p < self.n_bits { Some(p) } else { None }
+        if let Some(pos) = p {
+            if pos < self.n_bits {
+                return Some(pos);
+            }
+        }
+        None
     }
 
-    pub unsafe fn next_one_unchecked(&self, index: usize) -> usize {
-        (unsafe {
+    pub unsafe fn next_one_unchecked(&self, index: usize) -> Option<usize> {
+        if let Some(pos) = unsafe {
             BitVector::<&[u64]>::next_bit_slice_unchecked::<true>(
                 self.data.as_ref(),
                 index + self.offset,
                 self.n_bits + self.offset,
             )
-        }) - self.offset
+        } {
+            return Some(pos - self.offset);
+        }
+
+        None
     }
 
     pub fn next_zero(&self, index: usize) -> Option<usize> {
@@ -1396,17 +1407,25 @@ impl<'a> BitSliceWithOffset<'a> {
         // SAFETY: safe access due to the above checks
         let p = unsafe { self.next_zero_unchecked(index) };
 
-        if p < self.n_bits { Some(p) } else { None }
+        if let Some(pos) = p {
+            if pos < self.n_bits {
+                return Some(pos);
+            }
+        }
+        None
     }
 
-    pub unsafe fn next_zero_unchecked(&self, index: usize) -> usize {
-        (unsafe {
+    pub unsafe fn next_zero_unchecked(&self, index: usize) -> Option<usize> {
+        if let Some(pos) = unsafe {
             BitVector::<&[u64]>::next_bit_slice_unchecked::<false>(
                 self.data.as_ref(),
                 index + self.offset,
                 self.n_bits + self.offset,
             )
-        }) - self.offset
+        } {
+            return Some(pos - self.offset);
+        }
+        None
     }
     /// Returns a non-consuming iterator over positions of bits set to 1 in the bit vector.
     ///
@@ -1508,7 +1527,7 @@ impl AccessBin for BitSliceWithOffset<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gen_sequences::{DGaps, gen_strictly_increasing_sequence, negate_vector};
+    use crate::gen_sequences::{gen_strictly_increasing_sequence, negate_vector};
 
     #[test]
     fn test_is_empty() {

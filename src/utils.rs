@@ -1,3 +1,4 @@
+use num::PrimInt;
 use std::time::Instant;
 
 pub struct TimingQueries {
@@ -200,4 +201,15 @@ pub fn select_in_word_u128(word: u128, k: u64) -> u32 {
 /// Returns the type name of its argument.
 pub fn type_of<T>(_: &T) -> &'static str {
     std::any::type_name::<T>()
+}
+
+/// Computes the position of the most significant bit in v.
+pub fn msb<T>(v: T) -> u32
+where
+    T: PrimInt,
+{
+    if v == T::zero() {
+        return 0;
+    }
+    (std::mem::size_of::<T>() * 8 - 1) as u32 - v.leading_zeros()
 }
