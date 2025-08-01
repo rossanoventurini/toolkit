@@ -203,6 +203,19 @@ impl EliasFanoBuilder {
     /// - `val` is less than the last one,
     /// - `val` is no less than [`Self::universe()`], or
     /// - the number of stored integers becomes no less than [`Self::num_vals()`].
+    ///
+    /// ## Examples
+    /// ```
+    /// use toolkit::{EliasFano, EliasFanoBuilder};
+    ///
+    /// let mut efb = EliasFanoBuilder::new(10, 3);
+    /// efb.push(1);
+    /// efb.push(3);
+    /// efb.push(7);
+    ///
+    /// let ef = efb.build();
+    /// assert_eq!(ef.len(), 3);
+    /// ```
     pub fn push(&mut self, val: usize) {
         assert!(
             self.last <= val,
@@ -237,6 +250,17 @@ impl EliasFanoBuilder {
     /// - `vals` is not monotone increasing (also compared to the current last value),
     /// - values in `vals` is no less than [`Self::universe()`], or
     /// - the number of stored integers becomes no less than [`Self::num_vals()`].
+    ///
+    /// ## Examples
+    /// ```
+    /// use toolkit::{EliasFano, EliasFanoBuilder};
+    ///
+    /// let mut efb = EliasFanoBuilder::new(10, 3);
+    /// efb.extend(vec![1, 3, 7]);
+    ///
+    /// let ef = efb.build();
+    /// assert_eq!(ef.len(), 3);
+    /// ```
     pub fn extend<I>(&mut self, vals: I)
     where
         I: IntoIterator<Item = usize>,
@@ -247,6 +271,17 @@ impl EliasFanoBuilder {
     }
 
     /// Builds [`EliasFano`] from the pushed integers.
+    ///
+    /// ## Examples
+    /// ```
+    /// use toolkit::{EliasFano, EliasFanoBuilder};
+    ///
+    /// let mut efb = EliasFanoBuilder::new(10, 3);
+    /// efb.extend(vec![1, 3, 7]);
+    ///
+    /// let ef = efb.build();
+    /// assert_eq!(ef.len(), 3);
+    /// ```
     pub fn build(self) -> EliasFano {
         EliasFano {
             high_bits: DArray::new(&self.high_bits),
@@ -258,12 +293,28 @@ impl EliasFanoBuilder {
     }
 
     /// Returns the universe, i.e., the (exclusive) upper bound of possible integers.
+    ///
+    /// ## Examples
+    /// ```
+    /// use toolkit::{EliasFanoBuilder};
+    ///
+    /// let efb = EliasFanoBuilder::new(10, 3);
+    /// assert_eq!(efb.universe(), 10);
+    /// ```
     #[inline(always)]
     pub const fn universe(&self) -> usize {
         self.universe
     }
 
     /// Returns the number of integers that can be stored.
+    ///
+    /// ## Examples
+    /// ```
+    /// use toolkit::{EliasFanoBuilder};
+    ///
+    /// let efb = EliasFanoBuilder::new(10, 3);
+    /// assert_eq!(efb.num_vals(), 3);
+    /// ```
     #[inline(always)]
     pub const fn num_vals(&self) -> usize {
         self.num_vals
