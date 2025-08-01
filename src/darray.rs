@@ -177,7 +177,7 @@ impl<const BIT: bool> Inventories<BIT> {
             let v: i64 = (-(overflow_positions.len() as i64)) - 1;
             block_inventory.push(v);
             overflow_positions.extend(curr_positions.iter());
-            subblock_inventory.extend(std::iter::repeat(u16::MAX).take(curr_positions.len()));
+            subblock_inventory.extend(std::iter::repeat_n(u16::MAX, curr_positions.len()));
         }
     }
 }
@@ -202,7 +202,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
         let ones_inventories = Inventories::new(bv);
 
         let zeroes_inventories = if SELECT0_SUPPORT {
-            Some(Inventories::new(&bv))
+            Some(Inventories::new(bv))
         } else {
             None
         };
@@ -384,9 +384,9 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
         let mut word_idx = start_pos >> 6;
         let word_shift = start_pos & 63;
         let mut word = if !BIT {
-            !self.bv.get_word(word_idx) & (std::u64::MAX << word_shift) // if select0, negate the current word!
+            !self.bv.get_word(word_idx) & (u64::MAX << word_shift) // if select0, negate the current word!
         } else {
-            self.bv.get_word(word_idx) & (std::u64::MAX << word_shift)
+            self.bv.get_word(word_idx) & (u64::MAX << word_shift)
         };
 
         loop {

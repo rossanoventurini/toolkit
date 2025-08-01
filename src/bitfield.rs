@@ -122,7 +122,7 @@ impl BitField<Vec<u64>> {
                 "Cannot push non-zero value when field_width is 0"
             );
 
-            if self.len() == 0 {
+            if self.is_empty() {
                 // If this is the first value, initialize the bitvector
                 self.bitvector = BitVec::with_zeros(1);
             }
@@ -226,7 +226,6 @@ where
     /// We do not implement `From<BitField<S>> for BitField<D>` because it would conflict with the blanket
     ///  implementation `impl<T> From<T> for T>` provided by the standard library when `V == D`.
     ///  Instead, we expose a `convert_into` method to handle the conversion explicitly without ambiguity.
-
     pub fn convert_into<D>(&self) -> BitField<D>
     where
         D: AsRef<[u64]> + From<Vec<u64>>,

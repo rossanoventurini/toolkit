@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bitfield::BitFieldVec;
 use crate::utils::msb;
-use crate::{BitBoxed, BitField, BitFieldBoxed, DArray, SelectBin};
+use crate::{BitBoxed, BitFieldBoxed, DArray, SelectBin};
 
 /// Compressed monotone increasing sequence through Elias-Fano encoding.
 ///
