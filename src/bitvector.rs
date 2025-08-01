@@ -1,13 +1,73 @@
-//! This module provides implementations for mutable, immutable, or growable bit vectors.
+//! # BitVector Module
 //!
-//! The mutable bit vector offers operations to [`AccessBin`], append, and modify bits at
-//! arbitrary positions.
+//! This module provides flexible and efficient implementations of mutable, immutable, and growable bit vectors.
+//! It supports single-bit access, appending, slicing with offsets, iteration over set or unset bits,
+//! and conversion to and from compact or growable representations.
 //!
-//! The immutable bit vector allows access to bits and can be extended to support
-//! [`RankBin`] and [`SelectBin`] queries.
+//! ## Features
 //!
-//! For both data structures, it is possible to iterate over bits or positions of bits
-//! set either to zero or one.
+//! - `BitVec`: A growable and mutable bit vector (`Vec<u64>`-backed).
+//! - `BitBoxed`: A compact, fixed-size version of a bit vector.
+//! - `BitSlice`: A read-only view over existing memory.
+//! - Efficient iteration over `1` and `0` bit positions.
+//! - Fast `get_bits` and `set_bits` (up to 64 bits).
+//! - Optional offset support via `BitSliceWithOffset`.
+//!
+//! ## Examples
+//!
+//! ### Basic usage
+//!
+//! ```rust
+//! use toolkit::{BitVec, AccessBin};
+//!
+//! let mut bv = BitVec::new();
+//! bv.push(true);
+//! bv.push(false);
+//! bv.push(true);
+//!
+//! assert_eq!(bv.len(), 3);
+//! assert_eq!(bv.get(0), Some(true));
+//! assert_eq!(bv.get(1), Some(false));
+//!
+//! bv.set(1, true);
+//! assert_eq!(bv.get(1), Some(true));
+//! ```
+//!
+//! ### Creating a compact `BitBoxed` bit vector
+//!
+//! ```rust
+//! use toolkit::BitBoxed;
+//! use toolkit::AccessBin;
+//!
+//! let bb = BitBoxed::with_ones(10);
+//! assert_eq!(bb.count_ones(), 10);
+//! assert_eq!(bb.get(9), Some(true));
+//! ```
+//!
+//! ### Iterating over positions of ones
+//!
+//! ```rust
+//! use toolkit::BitVec;
+//! use toolkit::AccessBin;
+//!
+//! let vv = vec![0, 3, 5];
+//! let bv: BitVec = vv.iter().copied().collect();
+//!
+//! let ones: Vec<usize> = bv.ones().collect();
+//! assert_eq!(ones, vv);
+//! ```
+//!
+//! ### Using `BitSliceWithOffset`
+//!
+//! ```rust
+//! use toolkit::{BitVec, BitSliceWithOffset};
+//!
+//! let mut bv = BitVec::new();
+//! bv.append_bits(0b1111_0000, 8);
+//! let slice = BitSliceWithOffset::new(&bv, 4);
+//!
+//! assert_eq!(slice.get_bits(0, 4), Some(0b1111));
+//! ```
 
 // TODO:
 // - add CacheLine-based bit vectors
@@ -129,7 +189,7 @@ impl<V: AsRef<[u64]>> BitVector<V> {
         unsafe { Self::get_bits_slice(self.data.as_ref(), index, len) }
     }
 
-    // TODO: make the to functions a trait and implement for &[u64] together with set_bit and set_bits for &mut [T]. This way we can have a generic type T which implements those traits for &[T] and &mut [T].
+    // TODO: make the two functions a trait and implement for &[u64] together with set_bit and set_bits for &mut [T]. This way we can have a generic type T which implements those traits for &[T] and &mut [T].
 
     // Private function to decode bits at a given index on a slice.
     // The function does not check bounds while accessing data and does not clear bits in position larger than len.
@@ -149,13 +209,18 @@ impl<V: AsRef<[u64]>> BitVector<V> {
 
     /// Returns the position of the next 1 bit in the bit vector starting from position `index`.
     /// Returns [`None`] if `index` is out of bounds or if there is no one after index.
+    ///
     /// # Examples
     /// ```
     /// use toolkit::{BitVec, AccessBin};
     ///
-    /// let v = vec![0,2,3,4,5, 124, 1023, 1045];
+    /// let v = vec![0, 2, 3, 5];
     /// let bv: BitVec = v.into_iter().collect();
-    /// assert_eq!(bv.get(1), Some(false));
+    ///
+    /// assert_eq!(bv.next_one(0), Some(0)); // First 1 at position 0
+    /// assert_eq!(bv.next_one(1), Some(2)); // Next 1 after position 1 is at position 2
+    /// assert_eq!(bv.next_one(4), Some(5)); // Next 1 after position 4 is at position 5
+    /// assert_eq!(bv.next_one(6), None);    // No 1 after position 6
     /// ```
     #[inline]
     #[must_use]
@@ -189,6 +254,20 @@ impl<V: AsRef<[u64]>> BitVector<V> {
         unsafe { Self::next_bit_slice_unchecked::<true>(self.data.as_ref(), index, self.n_bits) }
     }
 
+    /// Returns the position of the next 0 bit in the bit vector starting from position `index`.
+    /// Returns [`None`] if `index` is out of bounds or if there is no zero after index.
+    ///
+    /// # Examples
+    /// ```
+    /// use toolkit::{BitVec};
+    ///
+    /// let v = vec![0, 2, 3, 5];
+    /// let bv: BitVec = v.into_iter().collect();
+    ///
+    /// assert_eq!(bv.next_zero(0), Some(1)); // First 0 after position 0 is at position 1
+    /// assert_eq!(bv.next_zero(2), Some(4)); // Next 0 after position 2 is at position 4
+    /// assert_eq!(bv.next_zero(5), None);    // No 0 after position 5 (end of bitvector)
+    /// ```
     #[inline]
     #[must_use]
     pub fn next_zero(&self, index: usize) -> Option<usize> {
@@ -377,6 +456,20 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     }
 
     /// Returns a non-consuming iterator over positions of bits set to 0 in the bit vector, starting at a specified bit position.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toolkit::BitVec;
+    /// use toolkit::gen_sequences::negate_vector;
+    ///
+    /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
+    /// let bv: BitVec = vv.iter().copied().collect();
+    ///
+    /// let v: Vec<usize> = bv.zeros_with_pos(100).collect();
+    /// let expected: Vec<usize> = negate_vector(&vv).into_iter().filter(|&x| x >= 100).collect();
+    /// assert_eq!(v, expected);
+    /// ```
     #[must_use]
     pub fn zeros_with_pos(&self, pos: usize) -> BitVectorBitPositionsIter<false> {
         let bs = unsafe { BitSliceWithOffset::from_raw_parts(self.data.as_ref(), self.n_bits, 0) };
@@ -544,8 +637,26 @@ where
     /// Converts the `BitVector` into a new `BitVector` with a different data type.
     ///
     /// We do not implement `From<BitVector<S>> for BitVector<D>` because it would conflict with the blanket
-    ///  implementation `impl<T> From<T> for T>` provided by the standard library when `V == D`.
-    ///  Instead, we expose a `convert_into` method to handle the conversion explicitly without ambiguity.
+    /// implementation `impl<T> From<T> for T>` provided by the standard library when `V == D`.
+    /// Instead, we expose a `convert_into` method to handle the conversion explicitly without ambiguity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toolkit::{BitVec, BitBoxed, AccessBin};
+    ///
+    /// let mut bv = BitVec::new();
+    /// bv.push(true);
+    /// bv.push(false);
+    /// bv.push(true);
+    ///
+    /// // Convert from growable BitVec to fixed-size BitBoxed
+    /// let bb: BitBoxed = bv.convert_into();
+    ///
+    /// assert_eq!(bb.len(), 3);
+    /// assert_eq!(bb.get(0), Some(true));
+    /// assert_eq!(bb.get(1), Some(false));
+    /// ```
     pub fn convert_into<D>(&self) -> BitVector<D>
     where
         D: AsRef<[u64]> + From<Vec<u64>>,
@@ -759,6 +870,25 @@ impl BitVector<Vec<u64>> {
     }
 
     /// Appends the bits of a given bit vector at the end of the current bit vector.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toolkit::{BitVec, AccessBin};
+    ///
+    /// let mut bv1 = BitVec::new();
+    /// bv1.append_bits(0b101, 3);  // bv1 = [1,0,1]
+    ///
+    /// let mut bv2 = BitVec::new();
+    /// bv2.append_bits(0b110, 3);  // bv2 = [0,1,1]
+    ///
+    /// bv1.concat(&bv2);           // bv1 = [1,0,1,0,1,1]
+    ///
+    /// assert_eq!(bv1.len(), 6);
+    /// assert_eq!(bv1.get(0), Some(true));  // First bit from bv1
+    /// assert_eq!(bv1.get(3), Some(false)); // First bit from bv2
+    /// assert_eq!(bv1.get(5), Some(true));  // Last bit from bv2
+    /// ```
     pub fn concat<W: AsRef<[u64]>>(&mut self, rhs: impl AsRef<BitVector<W>>) {
         let rhs = rhs.as_ref();
 
@@ -841,6 +971,22 @@ impl BitVector<Vec<u64>> {
     }
 
     /// Shrinks the underlying vector of 64-bit words to fit the actual size of the bit vector.
+    /// This can free up memory if the bit vector has a large capacity compared to its length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toolkit::BitVec;
+    ///
+    /// let mut bv = BitVec::with_capacity(1000);
+    /// bv.push(true);
+    /// bv.push(false);
+    ///
+    /// // The vector may have reserved space for more bits than needed
+    /// bv.shrink_to_fit(); // Free unused capacity
+    ///
+    /// assert_eq!(bv.len(), 2);
+    /// ```
     pub fn shrink_to_fit(&mut self) {
         self.data.shrink_to_fit();
     }
