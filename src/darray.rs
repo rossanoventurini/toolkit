@@ -267,6 +267,18 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     }
 
     /// Returns a non-consuming iterator over positions of bits set to 0 in the bit vector, starting at a specified bit position.
+    /// # Examples
+    ///
+    /// ```
+    /// use toolkit::DArray;
+    /// use toolkit::gen_sequences::negate_vector;
+    ///
+    /// let vv: Vec<usize> = vec![0, 2, 4, 5];
+    /// let da: DArray = vv.iter().copied().collect();
+    ///
+    /// let v: Vec<usize> = da.zeros_with_pos(2).collect();
+    /// assert_eq!(v, vec![3]);
+    /// ```
     pub fn zeros_with_pos(&self, pos: usize) -> BitVectorBitPositionsIter<false> {
         self.bv.zeros_with_pos(pos)
     }

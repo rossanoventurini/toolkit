@@ -8,7 +8,7 @@ pub mod bitvector;
 pub use bitvector::{BitBoxed, BitSlice, BitSliceWithOffset, BitVec};
 
 pub mod bitfield;
-pub use bitfield::{BitField, BitFieldBoxed, BitFieldSlice};
+pub use bitfield::{BitFieldBoxed, BitFieldSlice, BitFieldVec};
 
 pub mod darray;
 pub use darray::DArray;

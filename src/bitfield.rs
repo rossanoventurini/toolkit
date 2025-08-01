@@ -39,6 +39,15 @@ impl<V: AsRef<[u64]> + Default> BitField<V> {
     ///
     /// # Panics
     /// Panics if field_width is greater than 64.
+    ///
+    /// # Examples
+    /// ```
+    /// use toolkit::BitFieldVec;
+    ///
+    /// let bf = BitFieldVec::new(8); // 8 bits per value
+    /// assert_eq!(bf.field_width(), 8);
+    /// assert_eq!(bf.len(), 0);
+    /// ```
     pub fn new(field_width: u8) -> Self {
         assert!(field_width <= 64, "field_width must be between 0 and 64");
 
@@ -79,6 +88,21 @@ impl<V: AsRef<[u64]> + Default> BitField<V> {
     ///
     /// # Returns
     /// The value at the specified index, or None if the index is out of bounds.
+    ///
+    /// # Examples
+    /// ```
+    /// use toolkit::BitFieldVec;
+    ///
+    /// let mut bf = BitFieldVec::new(4); // 4 bits per value
+    /// bf.push(1);
+    /// bf.push(7);
+    /// bf.push(15);
+    ///
+    /// assert_eq!(bf.get(0), Some(1));
+    /// assert_eq!(bf.get(1), Some(7));
+    /// assert_eq!(bf.get(2), Some(15));
+    /// assert_eq!(bf.get(3), None); // Out of bounds
+    /// ```
     pub fn get(&self, index: usize) -> Option<u64> {
         if index >= self.len() {
             return None;
@@ -101,6 +125,23 @@ impl<V: AsRef<[u64]> + Default> BitField<V> {
 }
 
 impl BitField<Vec<u64>> {
+    /// Creates a new BitField with the specified capacity and number of bits per value.
+    ///
+    /// # Arguments
+    /// * `n_vals` - The number of values to reserve space for
+    /// * `width` - Number of bits per value (must be between 0 and 64)
+    ///
+    /// # Panics
+    /// Panics if `width` is greater than 64.
+    ///
+    /// # Examples
+    /// ```
+    /// use toolkit::BitFieldVec;
+    ///
+    /// let bf = BitFieldVec::with_capacity(10, 8); // Reserve space for 10 values, 8 bits each
+    /// assert_eq!(bf.field_width(), 8);
+    /// assert_eq!(bf.len(), 0);
+    /// ```
     #[must_use]
     pub fn with_capacity(n_vals: usize, width: u8) -> Self {
         assert!(width <= 64, "width must be between 0 and 64");
