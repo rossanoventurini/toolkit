@@ -20,13 +20,15 @@ use num::PrimInt;
 use num::traits::{FromBytes, ToBytes};
 
 pub mod stream_vbyte;
+pub use stream_vbyte::StreamVByte;
+pub use stream_vbyte::StreamVByteRandomAccess;
 
 pub mod gen_sequences;
 
 pub mod utils;
 
 /// Marker trait for unsigned integer types that can be encoded with Stream_Vbyte.
-pub trait SVBEncodable: PrimInt + FromBytes + ToBytes + Copy + std::fmt::Debug {}
+pub trait SVBEncodable: PrimInt + FromBytes + ToBytes + Copy + std::fmt::Debug + Default {}
 
 /// Implements Unsigned for all primitive unsigned integer types.
 macro_rules! impl_svb_encodable {
