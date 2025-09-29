@@ -21,7 +21,7 @@ use num::traits::{FromBytes, ToBytes};
 
 pub mod stream_vbyte;
 pub use stream_vbyte::StreamVByte;
-pub use stream_vbyte::StreamVByteRandomAccess;
+// pub use stream_vbyte::StreamVByteRandomAccess;
 
 pub mod gen_sequences;
 

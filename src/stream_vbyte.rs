@@ -1,19 +1,20 @@
 use mem_dbg::*;
 use serde::{Deserialize, Serialize};
 
-/// Code here is heavily inspired by [svbyte](https://github.com/bazhenov/svbyte/) and [stream_vbyte_rust](https://bitbucket.org/marshallpierce/stream-vbyte-rust) crates.
-use crate::SVBEncodable;
-use num::traits::{FromBytes, ToBytes, ops::bytes::NumBytes};
+// use crate::SVBEncodable;
+use crate::stream_vbyte::utils::{U32_LENGTHS, decode_slice_aligned};
+
+pub mod utils;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, MemSize, MemDbg)]
-pub struct StreamVByteRandomAccess<T: SVBEncodable> {
-    svb: StreamVByte<T>,
+pub struct StreamVByteRandomAccess {
+    svb: StreamVByte,
     offsets: Box<[usize]>,
     block_size: usize, // must be multiple of 4
 }
 
-impl<T: SVBEncodable> StreamVByteRandomAccess<T> {
-    pub fn new(input: &[T], block_size: usize) -> Self {
+impl StreamVByteRandomAccess {
+    pub fn new(input: &[u32], block_size: usize) -> Self {
         assert!(block_size % 4 == 0, "block_size must be multiple of 4");
 
         let svb = StreamVByte::encode(input);
@@ -24,7 +25,7 @@ impl<T: SVBEncodable> StreamVByteRandomAccess<T> {
             let mut offset = *offsets.last().unwrap();
             for control_byte in chunk {
                 for j in 0..4 {
-                    let len = ((control_byte >> (j * 2)) & 0b11) as usize + 1;
+                    let len = ((control_byte >> (6 - j * 2)) & 0b11) as usize + 1;
                     offset += len;
                 }
             }
@@ -38,49 +39,29 @@ impl<T: SVBEncodable> StreamVByteRandomAccess<T> {
             block_size,
         }
     }
-}
 
-impl<T> StreamVByteRandomAccess<T>
-where
-    T: SVBEncodable,
-    <T as FromBytes>::Bytes: NumBytes + Default + AsMut<[u8]> + AsRef<[u8]> + Sized,
-{
-    /// Returns an iterator over a portion of the encoded sequence.
-    ///
-    /// # Arguments
-    /// * `position` - The starting position in the original sequence
-    /// * `length` - The number of elements to iterate over
-    ///
-    /// # Examples
-    /// ```
-    /// use toolkit::{StreamVByte, StreamVByteRandomAccess};
-    ///
-    /// let data: Vec<u32> = (0..100).collect();
-    /// let svb_ra = StreamVByteRandomAccess::new(&data, 16);
-    ///
-    /// // Iterate over elements 10-19
-    /// let portion: Vec<u32> = svb_ra.iter_range(10, 10).collect();
-    /// assert_eq!(portion, (10..20).collect::<Vec<u32>>());
-    /// ```
-    pub fn iter_range(&self, position: usize, length: usize) -> StreamVByteIter<'_, T> {
-        if position >= self.svb.size || length == 0 {
-            return StreamVByteIter::new(&[], &[], 0);
-        }
+    pub fn get_range(&self, buffer: &mut [u32], range: std::ops::Range<usize>) {
+        assert!(
+            range.start < range.end && range.end <= self.svb.len(),
+            "Invalid range"
+        );
+        let length = range.len();
+        assert!(buffer.len() >= length, "Output buffer is not large enough");
+        let block_id = range.start / self.block_size;
 
-        let block_id = position / self.block_size;
-
-        let length = length.min(self.svb.size - position);
+        let length = length.min(self.svb.size - range.start);
 
         let mut offset_in_data = self.offsets[block_id];
         let mut starting_pos = block_id * self.block_size;
 
-        let mut to_skip = position - starting_pos;
+        let mut to_skip = range.start - starting_pos;
         let mut controls_index = starting_pos / 4;
 
+        // TODO: optimize skipping
         while to_skip >= 4 {
             let control_byte = self.svb.controls[controls_index];
             for j in 0..4 {
-                let len = ((control_byte >> (j * 2)) & 0b11) as usize + 1;
+                let len = ((control_byte >> (6 - j * 2)) & 0b11) as usize + 1;
                 offset_in_data += len;
             }
             to_skip -= 4;
@@ -88,7 +69,7 @@ where
             starting_pos += 4;
         }
 
-        let end = position + length - starting_pos;
+        let end = range.start + length - starting_pos;
 
         let controls = &self.svb.controls[controls_index..];
         let data = &self.svb.data[offset_in_data..];
@@ -97,146 +78,138 @@ where
         for _ in 0..to_skip {
             let _ = iter.next();
         }
-        iter
+        buffer[..length].copy_from_slice(&iter.take(length).collect::<Vec<u32>>());
     }
 }
 
+/// An implementation of Stream VByte encoding/decoding.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, MemSize, MemDbg)]
-pub struct StreamVByte<T: SVBEncodable> {
+pub struct StreamVByte {
     controls: Box<[u8]>,
     data: Box<[u8]>,
     size: usize,
-    phantom: std::marker::PhantomData<T>,
 }
 
-impl<T: SVBEncodable> StreamVByte<T> {
-    /// Encode a stream of integers using Stream VByte encoding.
-    pub fn encode(input: &[T]) -> Self {
-        let mut controls = Vec::with_capacity((input.len() + 3) / 4);
-        let mut encoded_data = Vec::with_capacity(input.len()); // at least 1 byte per integer
-
-        for chunk in input.chunks(4) {
-            Self::encode_upto_4_values(chunk, &mut controls, &mut encoded_data);
+impl StreamVByte {
+    pub fn encode(data: &[u32]) -> Self {
+        if data.is_empty() {
+            return Self::default();
         }
+        let mut controls = Vec::with_capacity((data.len() + 3) / 4);
+        let mut encoded_data = Vec::with_capacity(data.len() * std::mem::size_of::<u32>());
+        for chunk in data.chunks(4) {
+            let mut control_byte: u8 = 0;
+            for &n in chunk.iter() {
+                let bytes: [u8; std::mem::size_of::<u32>()] = n.to_be_bytes();
+                let length = 1.max(std::mem::size_of::<u32>() - n.leading_zeros() as usize / 8);
+
+                control_byte <<= 2;
+                control_byte |= (length - 1) as u8;
+                encoded_data.extend_from_slice(&bytes[std::mem::size_of::<u32>() - length..]);
+            }
+
+            controls.push(control_byte);
+        }
+
+        let remaining = data.len() % 4;
+        if remaining != 0 {
+            let last_control_byte = controls.last_mut().unwrap();
+            *last_control_byte <<= 2 * (4 - remaining);
+        }
+
+        // Iterator implementation decode 16 values at a time, for this reason we need to pad
+        // with 3 control bytes set to 0 and 15 data bytes set to 0.
+        // TODO: Pad with the minimum number of bytes, maybe there are better ways to estimate
+        // the required padding
+        controls.extend_from_slice(&[0u8; 3]);
+        encoded_data.extend_from_slice(&[0u8; 15]);
 
         Self {
             controls: controls.into_boxed_slice(),
             data: encoded_data.into_boxed_slice(),
-            size: input.len(),
-            phantom: std::marker::PhantomData,
+            size: data.len(),
         }
     }
 
-    #[inline]
-    fn encode_upto_4_values(data: &[T], controls: &mut Vec<u8>, encoded_data: &mut Vec<u8>) {
-        debug_assert!(data.len() <= 4);
-
-        let mut control_byte = 0u8;
-        for (i, &v) in data.iter().enumerate() {
-            let len = Self::encode_value(v, encoded_data) as u8 - 1;
-
-            control_byte |= len << (i * 2);
+    pub fn decode(&self) -> Vec<u32> {
+        if self.size == 0 {
+            return Vec::new();
         }
-        controls.push(control_byte);
-    }
+        let mut output = vec![0u32; self.size];
+        let control_end = self.size / 4; // self.controls.len() cannot be used because of padding //if self.size % 4 == 0 {
+        // self.controls.len() cannot be used because of padding
+        // } else {
+        //     self.controls.len() - 1
+        // };
 
-    #[inline]
-    fn encode_value(num: T, vec: &mut Vec<u8>) -> usize {
-        // this will calculate 0_u32 as taking 0 bytes, so ensure at least 1 byte
-        let len = 1.max(std::mem::size_of::<T>() - num.leading_zeros() as usize / 8);
-        let bytes = ToBytes::to_le_bytes(&num);
+        let mut encoded_data_index =
+            decode_slice_aligned(&mut output, &self.controls[..control_end], &self.data);
 
-        for b in bytes.as_ref().iter().take(len) {
-            vec.push(*b);
-        }
-        len
-    }
+        let last_control_byte = if self.size % 4 == 0 {
+            0
+        } else {
+            self.controls[control_end]
+        };
+        let mut output_index = control_end * 4;
 
-    /// Returns the number of integers stored in the `StreamVByte`.
-    pub fn len(&self) -> usize {
-        self.size
-    }
+        for i in 0..(self.size % 4) {
+            // done only if last chunk is partial
+            let length = ((last_control_byte >> (6 - 2 * i)) & 0b11) + 1;
 
-    /// Returns `true` if the `StreamVByte` contains no integers.
-    pub fn is_empty(&self) -> bool {
-        self.size == 0
-    }
-}
+            let mut value_bytes = [0u8; 4];
+            value_bytes[4 - length as usize..].copy_from_slice(
+                &self.data[encoded_data_index..encoded_data_index + length as usize],
+            );
 
-impl<T> StreamVByte<T>
-where
-    T: SVBEncodable,
-    <T as FromBytes>::Bytes: NumBytes + Default + AsMut<[u8]> + AsRef<[u8]> + Sized,
-{
-    pub fn decode(&self) -> Vec<T> {
-        let mut output = Vec::with_capacity(self.size);
-        let mut data_index = 0;
+            let value = u32::from_be_bytes(value_bytes);
 
-        let mut controls_iter = self.controls.iter();
+            output[output_index] = value;
+            output_index += 1;
 
-        for &control_byte in controls_iter.by_ref().take(self.size / 4) {
-            self.decode_upto_4_values(control_byte, &mut data_index, &mut output, 4);
-        }
-        if let Some(&control_byte) = controls_iter.next() {
-            self.decode_upto_4_values(control_byte, &mut data_index, &mut output, self.size % 4);
+            encoded_data_index += length as usize;
         }
 
         output
     }
 
-    /// Returns an iterator over the values in the `StreamVByte`.
-    pub fn iter(&self) -> StreamVByteIter<'_, T> {
-        StreamVByteIter::new(&self.controls, &self.data, self.size)
-    }
-
-    #[inline]
-    fn decode_upto_4_values(
-        &self,
-        control_byte: u8,
-        data_index: &mut usize,
-        output: &mut Vec<T>,
-        count: usize,
-    ) {
-        debug_assert!(count <= 4);
-
-        for i in 0..count {
-            let len = ((control_byte >> (i * 2)) & 0b11) as usize + 1;
-
-            let value = Self::decode_value(&self.data[*data_index..*data_index + len]);
-
-            output.push(value);
-
-            *data_index += len;
+    /// TODO: Make it faster with table lookup
+    pub fn control_byte_length(control_byte: u8) -> usize {
+        let mut length = 0;
+        for i in 0..4 {
+            length += ((control_byte >> (6 - i * 2)) & 0b11) as usize + 1;
         }
+
+        assert_eq!(length, U32_LENGTHS[control_byte as usize] as usize);
+        length
     }
 
-    #[inline]
-    fn decode_value(slice: &[u8]) -> T {
-        let mut buf = <T as FromBytes>::Bytes::default();
-        let dst = buf.as_mut();
+    pub fn len(&self) -> usize {
+        self.size
+    }
 
-        dst[..slice.len()].copy_from_slice(&slice[..]);
-        T::from_le_bytes(&buf)
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+
+    pub fn iter(&self) -> StreamVByteIter<'_> {
+        StreamVByteIter::new(&self.controls, &self.data, self.size)
     }
 }
 
 /// Iterator for StreamVByte that decodes 4 values at a time and keeps them in a buffer.
-pub struct StreamVByteIter<'a, T: SVBEncodable> {
+const BUFFER_SIZE: usize = 16;
+pub struct StreamVByteIter<'a> {
     controls: &'a [u8],
     data: &'a [u8],
     size: usize,
     control_index: usize,
     data_index: usize,
-    buffer: [T; 4],
+    buffer: [u32; BUFFER_SIZE],
     buffer_index: usize,
     position: usize,
 }
 
-impl<'a, T> StreamVByteIter<'a, T>
-where
-    T: SVBEncodable,
-    <T as FromBytes>::Bytes: NumBytes + Default + AsMut<[u8]> + AsRef<[u8]> + Sized,
-{
+impl<'a> StreamVByteIter<'a> {
     /// Creates a new iterator for the given `StreamVByte`.
     fn new(controls: &'a [u8], data: &'a [u8], size: usize) -> Self {
         Self {
@@ -245,46 +218,35 @@ where
             size,
             control_index: 0,
             data_index: 0,
-            buffer: [T::default(); 4],
-            buffer_index: 4, // Start with empty buffer (index points past last element)
+            buffer: [0; BUFFER_SIZE],
+            buffer_index: BUFFER_SIZE, // Start with empty buffer (index points past last element)
             position: 0,
         }
     }
 
-    /// Fills the buffer with up to 4 decoded values.
+    /// Fills the buffer with up to BUFFER_SIZE decoded values.
     fn fill_buffer(&mut self) {
         if self.position >= self.size {
             return;
         }
 
-        let control_byte = self.controls[self.control_index];
-        let values_to_decode = std::cmp::min(4, self.size - self.position);
+        self.data_index += crate::stream_vbyte::utils::decode_16_aligned(
+            &mut self.buffer,
+            &self.controls[self.control_index..],
+            &self.data[self.data_index..],
+        );
 
-        // Decode up to 4 values
-        for i in 0..values_to_decode {
-            let len = ((control_byte >> (i * 2)) & 0b11) as usize + 1;
-
-            let value =
-                StreamVByte::decode_value(&self.data[self.data_index..self.data_index + len]);
-            self.buffer[i] = value;
-            self.data_index += len;
-        }
-
-        self.control_index += 1;
+        self.control_index += 4;
         self.buffer_index = 0;
     }
 }
 
-impl<'a, T> Iterator for StreamVByteIter<'a, T>
-where
-    T: SVBEncodable + Copy,
-    <T as FromBytes>::Bytes: NumBytes + Default + AsMut<[u8]> + AsRef<[u8]> + Sized,
-{
-    type Item = T;
+impl<'a> Iterator for StreamVByteIter<'a> {
+    type Item = u32;
 
     fn next(&mut self) -> Option<Self::Item> {
         // If buffer is empty or we've consumed all values in current buffer, fill it
-        if self.buffer_index >= 4 {
+        if self.buffer_index >= BUFFER_SIZE {
             self.fill_buffer();
         }
 
@@ -305,442 +267,831 @@ where
     }
 }
 
-impl<'a, T> ExactSizeIterator for StreamVByteIter<'a, T>
-where
-    T: SVBEncodable + Copy,
-    <T as FromBytes>::Bytes: NumBytes + Default + AsMut<[u8]> + AsRef<[u8]> + Sized,
-{
+impl<'a> ExactSizeIterator for StreamVByteIter<'a> {
     fn len(&self) -> usize {
         self.size - self.position
     }
 }
 
-mod utils;
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_stream_vbyte_u32_small() {
-        let data: Vec<u32> = vec![1, 2, 3, 4, 5, 100, 1000, 10000];
-        let encoded = StreamVByte::encode(&data);
-        let decoded = encoded.decode();
-
-        assert_eq!(data, decoded);
-        assert_eq!(encoded.len(), data.len());
-        assert!(!encoded.is_empty());
-    }
+    // ============ BASIC FUNCTIONALITY TESTS ============
 
     #[test]
-    fn test_stream_vbyte_u32_large() {
-        // Test with large u32 vector
-        let data: Vec<u32> = (0..10000).map(|i| i * i + 100).collect();
-        let encoded = StreamVByte::encode(&data);
-        let decoded = encoded.decode();
-
-        assert_eq!(data, decoded);
-        assert_eq!(encoded.len(), data.len());
-
-        // Verify that compression is effective for small values
-        let original_size = data.len() * 4; // 4 bytes per u32
-        let compressed_size = encoded.controls.len() + encoded.data.len();
-        println!(
-            "Original size: {} bytes, Compressed size: {} bytes",
-            original_size, compressed_size
-        );
-        assert!(compressed_size < original_size);
-    }
-
-    #[test]
-    fn test_stream_vbyte_u16_small() {
-        let data: Vec<u16> = vec![1, 2, 3, 4, 5, 100, 1000, 10000];
-        let encoded = StreamVByte::encode(&data);
-        let decoded = encoded.decode();
-
-        assert_eq!(data, decoded);
-        assert_eq!(encoded.len(), data.len());
-        assert!(!encoded.is_empty());
-    }
-
-    #[test]
-
-    fn test_stream_vbyte_u16_large() {
-        // Test with large u16 vector
-        let data: Vec<u16> = (0..20000).map(|i| (i % 65536) as u16).collect();
-        let encoded = StreamVByte::encode(&data);
-        let decoded = encoded.decode();
-
-        assert_eq!(data, decoded);
-        assert_eq!(encoded.len(), data.len());
-
-        // Verify that compression is effective
-        let original_size = data.len() * 2; // 2 bytes per u16
-        let compressed_size = encoded.controls.len() + encoded.data.len();
-        println!(
-            "Original size: {} bytes, Compressed size: {} bytes",
-            original_size, compressed_size
-        );
-    }
-
-    #[test]
-
-    fn test_stream_vbyte_u32_mixed_values() {
-        // Test with mixed values (small and large)
-        let mut data: Vec<u32> = Vec::new();
-        for i in 0..1000 {
-            data.push(i); // Small values
-            data.push(u32::MAX - i); // Large values
-            data.push(1 << (i % 20)); // Powers of 2
-            data.push((i * 17) % 10000); // Moderate random values
-        }
-
-        let encoded = StreamVByte::encode(&data);
-        let decoded = encoded.decode();
-
-        assert_eq!(data, decoded);
-        assert_eq!(encoded.len(), data.len());
-    }
-
-    #[test]
-
-    fn test_stream_vbyte_u16_mixed_values() {
-        // Test with mixed values for u16
-        let mut data: Vec<u16> = Vec::new();
-        for i in 0..1000 {
-            data.push(i as u16); // Small values
-            data.push(u16::MAX - i as u16); // Large values
-            data.push(1 << (i % 14)); // Powers of 2 (max 2^15 for u16)
-            data.push(((i * 17) % 1000) as u16); // Moderate random values
-        }
-
-        let encoded = StreamVByte::encode(&data);
-        let decoded = encoded.decode();
-
-        assert_eq!(data, decoded);
-        assert_eq!(encoded.len(), data.len());
-    }
-
-    #[test]
-    fn test_stream_vbyte_empty() {
+    fn test_empty_sequence() {
         let data: Vec<u32> = vec![];
         let encoded = StreamVByte::encode(&data);
         let decoded = encoded.decode();
 
-        assert_eq!(data, decoded);
+        assert_eq!(decoded, data);
         assert_eq!(encoded.len(), 0);
         assert!(encoded.is_empty());
     }
 
     #[test]
-    fn test_stream_vbyte_single_value() {
+    fn test_single_element() {
         let data: Vec<u32> = vec![42];
         let encoded = StreamVByte::encode(&data);
         let decoded = encoded.decode();
 
-        assert_eq!(data, decoded);
+        assert_eq!(decoded, data);
         assert_eq!(encoded.len(), 1);
         assert!(!encoded.is_empty());
     }
 
     #[test]
-    fn test_stream_vbyte_compression_efficiency() {
-        // Test with many small values to verify compression effectiveness
-        let data: Vec<u32> = (0..50000).map(|i| i % 256).collect(); // Values requiring only 1 byte
+    fn test_basic_sequence() {
+        let data: Vec<u32> = vec![1, 2, 3, 4, 5, 100, 1000, 10000];
         let encoded = StreamVByte::encode(&data);
         let decoded = encoded.decode();
 
-        assert_eq!(data, decoded);
-        assert_eq!(encoded.data.len(), data.len()); // Each value should take exactly 1 byte
+        assert_eq!(encoded.controls.len(), (data.len() + 3) / 4 + 3); // +3 for padding
+        assert_eq!(decoded, data);
+        assert_eq!(encoded.len(), data.len());
+        assert!(!encoded.is_empty());
+    }
+
+    // ============ SIZE VARIATION TESTS ============
+
+    #[test]
+    fn test_exact_multiples_of_4() {
+        // Test sequences that are exact multiples of 4 elements
+        for &size in &[4, 8, 12, 16, 20, 100, 1000] {
+            let data: Vec<u32> = (0..size).collect();
+            let encoded = StreamVByte::encode(&data);
+            let decoded = encoded.decode();
+
+            assert_eq!(decoded, data, "Failed for size {}", size);
+            assert_eq!(encoded.len(), data.len());
+        }
     }
 
     #[test]
-    fn test_stream_vbyte_iterator_u32() {
-        let data: Vec<u32> = vec![1, 2, 3, 4, 5, 100, 1000, 10000];
+    fn test_non_multiples_of_4() {
+        // Test sequences that are NOT multiples of 4 elements
+        for &size in &[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 101, 1001] {
+            let data: Vec<u32> = (0..size).collect();
+            let encoded = StreamVByte::encode(&data);
+            let decoded = encoded.decode();
+
+            assert_eq!(decoded, data, "Failed for size {}", size);
+            assert_eq!(encoded.len(), data.len());
+        }
+    }
+
+    // ============ VALUE RANGE TESTS ============
+
+    #[test]
+    fn test_small_values_1_byte() {
+        // Test with values that fit in 1 byte (0-255)
+        let data: Vec<u32> = (0..256).collect();
         let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
 
-        // Test iterator vs decode
-        let iter_result: Vec<u32> = encoded.iter().collect();
-        let decode_result = encoded.decode();
-
-        assert_eq!(iter_result, data);
-        assert_eq!(decode_result, data);
-        assert_eq!(iter_result, decode_result);
-
-        // Test iterator length
-        assert_eq!(encoded.iter().len(), data.len());
+        assert_eq!(decoded, data);
     }
 
     #[test]
-    fn test_stream_vbyte_iterator_large() {
-        let data: Vec<u32> = (0..10000).map(|i| i * i + 100).collect();
+    fn test_medium_values_2_bytes() {
+        // Test with values that need 2 bytes (256-65535)
+        let data: Vec<u32> = (256..1024).collect(); // 768 values needing 2 bytes each
         let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
 
-        // Test iterator with large data
-        let iter_result: Vec<u32> = encoded.iter().collect();
-        let decode_result = encoded.decode();
-
-        assert_eq!(data, iter_result);
-        assert_eq!(data, decode_result);
-
-        // Test partial iteration
-        let partial: Vec<u32> = encoded.iter().take(100).collect();
-        assert_eq!(partial, data[0..100]);
-
-        // Test size hint
-        let mut iter = encoded.iter();
-        assert_eq!(iter.size_hint(), (data.len(), Some(data.len())));
-
-        // Consume a few elements and check size hint
-        iter.next();
-        iter.next();
-        iter.next();
-        assert_eq!(iter.size_hint(), (data.len() - 3, Some(data.len() - 3)));
+        assert_eq!(decoded, data);
+        // Each value should take exactly 2 bytes in data (plus padding)
+        assert_eq!(encoded.data.len(), data.len() * 2 + 15);
     }
 
     #[test]
-    fn test_stream_vbyte_iterator_u16() {
-        let data: Vec<u16> = (0..1000).map(|i| (i % 256) as u16).collect();
+    fn test_large_values_3_bytes() {
+        // Test with values that need 3 bytes (65536-16777215)
+        let data: Vec<u32> = vec![65536, 100000, 1000000, 16777215];
         let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
 
-        // Test iterator
-        let iter_result: Vec<u16> = encoded.iter().collect();
-        assert_eq!(data, iter_result);
-
-        // Test ExactSizeIterator
-        assert_eq!(encoded.iter().len(), data.len());
+        assert_eq!(decoded, data);
+        // Each value should take exactly 3 bytes in data (plus padding)
+        assert_eq!(encoded.data.len(), data.len() * 3 + 15);
     }
 
     #[test]
-    fn test_stream_vbyte_iterator_empty() {
+    fn test_max_values_4_bytes() {
+        // Test with values that need 4 bytes (16777216-u32::MAX)
+        let data: Vec<u32> = vec![16777216, u32::MAX - 1, u32::MAX];
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        // Each value should take exactly 4 bytes in data (plus padding)
+        assert_eq!(encoded.data.len(), data.len() * 4 + 15);
+    }
+
+    #[test]
+    fn test_mixed_value_sizes() {
+        // Test with a mix of 1, 2, 3, and 4 byte values
+        let data: Vec<u32> = vec![
+            // 1 byte values
+            0,
+            1,
+            127,
+            255,
+            // 2 byte values
+            256,
+            1000,
+            32767,
+            65535,
+            // 3 byte values
+            65536,
+            100000,
+            1000000,
+            16777215,
+            // 4 byte values
+            16777216,
+            2000000000,
+            u32::MAX - 1,
+            u32::MAX,
+        ];
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        // Total data size should be: 4*1 + 4*2 + 4*3 + 4*4 = 40 bytes
+        assert_eq!(encoded.data.len(), 40 + 15); // +15 for padding
+    }
+
+    // ============ BOUNDARY VALUE TESTS ============
+
+    #[test]
+    fn test_byte_boundaries() {
+        // Test specific boundary values for each byte length
+        let data: Vec<u32> = vec![
+            // 1-byte boundaries
+            0,
+            1,
+            127,
+            128,
+            254,
+            255,
+            // 2-byte boundaries
+            256,
+            257,
+            32767,
+            32768,
+            65534,
+            65535,
+            // 3-byte boundaries
+            65536,
+            65537,
+            8388607,
+            8388608,
+            16777214,
+            16777215,
+            // 4-byte boundaries
+            16777216,
+            16777217,
+            u32::MAX - 1,
+            u32::MAX,
+        ];
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn test_powers_of_two() {
+        // Test all powers of 2 that fit in u32
+        let data: Vec<u32> = (0..32).map(|i| 1u32 << i).collect();
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn test_powers_of_two_minus_one() {
+        // Test values like 2^n - 1 (all bits set in lower positions)
+        let data: Vec<u32> = (1..32).map(|i| (1u32 << i) - 1).collect();
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+    }
+
+    // ============ PATTERN TESTS ============
+
+    #[test]
+    fn test_repeated_values() {
+        // Test sequences with many repeated values
+        let mut data: Vec<u32> = Vec::new();
+
+        // Many small values
+        for _ in 0..100 {
+            data.push(42);
+        }
+
+        // Many medium values
+        for _ in 0..100 {
+            data.push(12345);
+        }
+
+        // Many large values
+        for _ in 0..100 {
+            data.push(0x12345678);
+        }
+
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        assert_eq!(encoded.len(), data.len());
+    }
+
+    #[test]
+    fn test_ascending_sequence() {
+        let data: Vec<u32> = (0..1000).collect();
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        assert_eq!(encoded.len(), data.len());
+    }
+
+    #[test]
+    fn test_descending_sequence() {
+        let data: Vec<u32> = (0..1000).rev().collect();
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        assert_eq!(encoded.len(), data.len());
+    }
+
+    #[test]
+    fn test_alternating_small_large() {
+        // Alternating between small and large values
+        let mut data: Vec<u32> = Vec::new();
+        for i in 0..1000 {
+            if i % 2 == 0 {
+                data.push(i % 256); // Small value (1 byte)
+            } else {
+                data.push(0xFF000000 + (i % 256)); // Large value (4 bytes)
+            }
+        }
+
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        assert_eq!(encoded.len(), data.len());
+    }
+
+    #[test]
+    fn test_fibonacci_sequence() {
+        // Test Fibonacci numbers (common in real data)
+        let mut data: Vec<u32> = vec![0, 1];
+        while data.len() < 50 {
+            let next = data[data.len() - 1].saturating_add(data[data.len() - 2]);
+            if next == data[data.len() - 1] {
+                // Overflow detection
+                break;
+            }
+            data.push(next);
+        }
+
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        assert_eq!(encoded.len(), data.len());
+    }
+
+    // ============ LARGE SEQUENCE TESTS ============
+
+    #[test]
+    fn test_large_sequences() {
+        // Test with large sequences to ensure scalability
+        for &size in &[10000, 50000, 100000] {
+            let data: Vec<u32> = (0..size).map(|i| (i * 17 + 13) % 65536).collect();
+            let encoded = StreamVByte::encode(&data);
+            let decoded = encoded.decode();
+
+            assert_eq!(decoded, data, "Failed for large size {}", size);
+            assert_eq!(encoded.len(), data.len());
+        }
+    }
+
+    #[test]
+    fn test_compression_effectiveness() {
+        // Test that compression actually reduces size for appropriate data
+        let small_values: Vec<u32> = (0..10000).map(|i| i % 256).collect(); // All 1-byte values
+        let encoded = StreamVByte::encode(&small_values);
+        let original_size = small_values.len() * 4; // 4 bytes per u32
+        let compressed_size = encoded.controls.len() + encoded.data.len();
+
+        // Should achieve significant compression for small values
+        assert!(compressed_size < original_size);
+        assert!(compressed_size < original_size / 2); // At least 2x compression
+
+        let decoded = encoded.decode();
+        assert_eq!(decoded, small_values);
+    }
+
+    // ============ STRESS TESTS ============
+
+    #[test]
+    fn test_all_zeros() {
+        let data: Vec<u32> = vec![0; 10000];
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn test_all_max_values() {
+        let data: Vec<u32> = vec![u32::MAX; 1000];
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        // All max values should take maximum space (4 bytes each) + 15 for padding
+        assert_eq!(encoded.data.len(), data.len() * 4 + 15);
+    }
+
+    #[test]
+    fn test_random_like_sequence() {
+        // Generate a pseudo-random sequence using a simple PRNG
+        let mut data: Vec<u32> = Vec::new();
+        let mut state = 12345u64; // Simple seed
+
+        for _ in 0..10000 {
+            // Simple linear congruential generator
+            state = state.wrapping_mul(1103515245).wrapping_add(12345);
+            data.push((state >> 16) as u32 & 0xFFFF); // Use upper bits, limit to 16-bit values
+        }
+
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        assert_eq!(encoded.len(), data.len());
+    }
+
+    // ============ CONTROL BYTE TESTS ============
+
+    #[test]
+    fn test_control_byte_patterns() {
+        // Test all possible combinations of 1-4 byte lengths within a single control byte
+        let test_cases = vec![
+            // All 1-byte values (control = 0b00000000)
+            vec![1, 2, 3, 4],
+            // All 2-byte values (control = 0b01010101)
+            vec![256, 512, 1024, 2048],
+            // All 3-byte values (control = 0b10101010)
+            vec![65536, 131072, 262144, 524288],
+            // All 4-byte values (control = 0b11111111)
+            vec![16777216, 33554432, 67108864, 134217728],
+            // Mixed: 1,2,3,4 bytes (control = 0b11100100)
+            vec![255, 65535, 16777215, u32::MAX],
+        ];
+
+        for data in test_cases {
+            let encoded = StreamVByte::encode(&data);
+            let decoded = encoded.decode();
+            assert_eq!(decoded, data, "Failed for pattern: {:?}", data);
+        }
+    }
+
+    #[test]
+    fn test_partial_control_bytes() {
+        // Test sequences that don't fill complete control bytes (not multiples of 4)
+        let test_cases = vec![
+            vec![1],                   // 1 element
+            vec![1, 2],                // 2 elements
+            vec![1, 2, 3],             // 3 elements
+            vec![1, 2, 3, 4, 5],       // 5 elements (1 full + 1 partial control byte)
+            vec![1, 2, 3, 4, 5, 6],    // 6 elements
+            vec![1, 2, 3, 4, 5, 6, 7], // 7 elements
+        ];
+
+        for data in test_cases {
+            let encoded = StreamVByte::encode(&data);
+            let decoded = encoded.decode();
+            assert_eq!(decoded, data, "Failed for partial sequence: {:?}", data);
+            assert_eq!(encoded.len(), data.len());
+        }
+    }
+
+    // ============ EDGE CASE TESTS ============
+
+    #[test]
+    fn test_single_large_value() {
+        let data: Vec<u32> = vec![u32::MAX];
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        assert_eq!(encoded.len(), 1);
+    }
+
+    #[test]
+    fn test_alternating_min_max() {
+        let data: Vec<u32> = vec![0, u32::MAX, 0, u32::MAX, 0, u32::MAX];
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn test_bit_patterns() {
+        // Test various bit patterns that might reveal encoding issues
+        let data: Vec<u32> = vec![
+            0x00000000, // All zeros
+            0x00000001, // Single bit set
+            0x80000000, // MSB set
+            0x55555555, // Alternating bits
+            0xAAAAAAAA, // Alternating bits (inverse)
+            0x0F0F0F0F, // Nibble pattern
+            0xF0F0F0F0, // Nibble pattern (inverse)
+            0x00FF00FF, // Byte pattern
+            0xFF00FF00, // Byte pattern (inverse)
+            0xFFFFFFFF, // All ones
+        ];
+
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+    }
+
+    // ============ PERFORMANCE REGRESSION TESTS ============
+
+    #[test]
+    fn test_worst_case_compression() {
+        // Create data that should compress poorly (all 4-byte values)
+        let data: Vec<u32> = (0..1000).map(|i| 0xFF000000 + i).collect();
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        // Should still be correct even if compression is poor
+        assert_eq!(encoded.len(), data.len());
+    }
+
+    #[test]
+    fn test_best_case_compression() {
+        // Create data that should compress very well (all small values)
+        let data: Vec<u32> = vec![1; 10000]; // All identical small values
+        let encoded = StreamVByte::encode(&data);
+        let decoded = encoded.decode();
+
+        assert_eq!(decoded, data);
+        assert_eq!(encoded.len(), data.len());
+    }
+
+    // ============ ITERATOR TESTS ============
+
+    #[test]
+    fn test_iterator_empty() {
         let data: Vec<u32> = vec![];
         let encoded = StreamVByte::encode(&data);
-
         let iter_result: Vec<u32> = encoded.iter().collect();
-        assert_eq!(data, iter_result);
+
+        assert_eq!(iter_result, data);
         assert_eq!(encoded.iter().len(), 0);
+        assert_eq!(encoded.iter().size_hint(), (0, Some(0)));
     }
 
     #[test]
-    fn test_stream_vbyte_iterator_single() {
+    fn test_iterator_single_element() {
         let data: Vec<u32> = vec![42];
         let encoded = StreamVByte::encode(&data);
-
         let iter_result: Vec<u32> = encoded.iter().collect();
-        assert_eq!(data, iter_result);
+
+        assert_eq!(iter_result, data);
         assert_eq!(encoded.iter().len(), 1);
+        assert_eq!(encoded.iter().size_hint(), (1, Some(1)));
     }
 
     #[test]
-    fn test_stream_vbyte_iterator_buffer_behavior() {
-        // Test that the iterator works correctly with groups of 4
-        let data: Vec<u32> = (1..=17).collect(); // 17 elements to test multiple batches
+    fn test_iterator_basic_sequence() {
+        let data: Vec<u32> = vec![1, 2, 3, 4, 5, 100, 1000, 10000];
+        let encoded = StreamVByte::encode(&data);
+        let iter_result: Vec<u32> = encoded.iter().collect();
+
+        assert_eq!(iter_result, data);
+        assert_eq!(encoded.iter().len(), data.len());
+        assert_eq!(encoded.iter().size_hint(), (data.len(), Some(data.len())));
+    }
+
+    #[test]
+    fn test_iterator_vs_decode() {
+        // Test that iterator produces same results as decode()
+        let data: Vec<u32> = (0..1000).map(|i| (i * 17 + 13) % 65536).collect();
         let encoded = StreamVByte::encode(&data);
 
+        let decoded = encoded.decode();
+        let iter_result: Vec<u32> = encoded.iter().collect();
+
+        assert_eq!(decoded, data);
+        assert_eq!(iter_result, data);
+        assert_eq!(decoded, iter_result);
+    }
+
+    #[test]
+    fn test_iterator_exact_multiples_of_16() {
+        // Test sequences that are exact multiples of buffer size (16)
+        for &size in &[16, 32, 48, 64, 160, 1600] {
+            let data: Vec<u32> = (0..size).collect();
+            let encoded = StreamVByte::encode(&data);
+            let iter_result: Vec<u32> = encoded.iter().collect();
+
+            assert_eq!(iter_result, data, "Failed for size {}", size);
+        }
+    }
+
+    #[test]
+    fn test_iterator_non_multiples_of_16() {
+        // Test sequences that are NOT multiples of buffer size
+        for &size in &[1, 7, 15, 17, 31, 33, 47, 49, 63, 65, 159, 161] {
+            let data: Vec<u32> = (0..size).collect();
+            let encoded = StreamVByte::encode(&data);
+            let iter_result: Vec<u32> = encoded.iter().collect();
+
+            assert_eq!(iter_result, data, "Failed for size {}", size);
+        }
+    }
+
+    #[test]
+    fn test_iterator_mixed_value_sizes() {
+        let data: Vec<u32> = vec![
+            // 1 byte values
+            0,
+            1,
+            127,
+            255,
+            // 2 byte values
+            256,
+            1000,
+            32767,
+            65535,
+            // 3 byte values
+            65536,
+            100000,
+            1000000,
+            16777215,
+            // 4 byte values
+            16777216,
+            2000000000,
+            u32::MAX - 1,
+            u32::MAX,
+        ];
+        let encoded = StreamVByte::encode(&data);
+        let iter_result: Vec<u32> = encoded.iter().collect();
+
+        assert_eq!(iter_result, data);
+    }
+
+    #[test]
+    fn test_iterator_large_sequence() {
+        let data: Vec<u32> = (0..10000).map(|i| (i * 17 + 13) % 65536).collect();
+        let encoded = StreamVByte::encode(&data);
+        let iter_result: Vec<u32> = encoded.iter().collect();
+
+        assert_eq!(iter_result, data);
+    }
+
+    #[test]
+    fn test_iterator_size_hint_during_iteration() {
+        let data: Vec<u32> = (0..100).collect();
+        let encoded = StreamVByte::encode(&data);
         let mut iter = encoded.iter();
 
-        // Verify that the iterator produces correct values one at a time
-        for expected in &data {
-            assert_eq!(iter.next(), Some(*expected));
-        }
+        // Check size_hint at different points during iteration
+        assert_eq!(iter.size_hint(), (100, Some(100)));
 
-        // Verify that the iterator is exhausted
-        assert_eq!(iter.next(), None);
+        // Consume some elements
+        for _ in 0..10 {
+            iter.next();
+        }
+        assert_eq!(iter.size_hint(), (90, Some(90)));
+
+        // Consume more elements
+        for _ in 0..50 {
+            iter.next();
+        }
+        assert_eq!(iter.size_hint(), (40, Some(40)));
+
+        // Consume remaining elements
+        let remaining: Vec<u32> = iter.collect();
+        assert_eq!(remaining.len(), 40);
+        assert_eq!(remaining, (60..100).collect::<Vec<u32>>());
     }
 
     #[test]
-    fn test_stream_vbyte_random_access_basic() {
-        let data: Vec<u32> = (0..100).collect();
-        let svb_ra = StreamVByteRandomAccess::new(&data, 16);
+    fn test_iterator_exact_size() {
+        let data: Vec<u32> = (0..173).collect(); // Non-multiple of 16
+        let encoded = StreamVByte::encode(&data);
+        let mut iter = encoded.iter();
 
-        // Test basic range iteration
-        let portion: Vec<u32> = svb_ra.iter_range(10, 10).collect();
-        assert_eq!(portion, (10..20).collect::<Vec<u32>>());
+        assert_eq!(iter.len(), 173);
+
+        // Consume some elements and check len updates
+        for _ in 0..50 {
+            iter.next();
+        }
+        assert_eq!(iter.len(), 123);
+
+        // Consume all remaining
+        let remaining: Vec<u32> = iter.collect();
+        assert_eq!(remaining.len(), 123);
+    }
+
+    #[test]
+    fn test_iterator_random_like_sequence() {
+        let mut data: Vec<u32> = Vec::new();
+        let mut state = 12345u64;
+
+        for _ in 0..5000 {
+            state = state.wrapping_mul(1103515245).wrapping_add(12345);
+            data.push((state >> 16) as u32 & 0xFFFF);
+        }
+
+        let encoded = StreamVByte::encode(&data);
+        let iter_result: Vec<u32> = encoded.iter().collect();
+
+        assert_eq!(iter_result, data);
+    }
+
+    // ============ RANDOM ACCESS TESTS ============
+
+    #[test]
+    fn test_random_access_basic() {
+        let data: Vec<u32> = (0..100).collect();
+        let ra = StreamVByteRandomAccess::new(&data, 16);
+
+        // Test single range
+        let mut buffer = vec![0u32; 10];
+        ra.get_range(&mut buffer, 10..20);
+        assert_eq!(buffer, (10..20).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn test_random_access_different_block_sizes() {
+        let data: Vec<u32> = (0..1000).collect();
+
+        for &block_size in &[4, 8, 16, 32, 64, 128] {
+            let ra = StreamVByteRandomAccess::new(&data, block_size);
+
+            // Test multiple ranges
+            let test_ranges = vec![0..10, 50..75, 100..150, 500..600, 900..950, 990..1000];
+
+            for range in test_ranges {
+                let mut buffer = vec![0u32; range.len()];
+                ra.get_range(&mut buffer, range.clone());
+                assert_eq!(
+                    buffer,
+                    range.map(|x| x as u32).collect::<Vec<u32>>(),
+                    "Failed for block_size {}",
+                    block_size
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_random_access_edge_cases() {
+        let data: Vec<u32> = (0..100).collect();
+        let ra = StreamVByteRandomAccess::new(&data, 16);
 
         // Test single element
-        let single: Vec<u32> = svb_ra.iter_range(50, 1).collect();
-        assert_eq!(single, vec![50]);
+        let mut buffer = vec![0u32; 1];
+        ra.get_range(&mut buffer, 42..43);
+        assert_eq!(buffer, vec![42]);
 
-        // Test from beginning
-        let beginning: Vec<u32> = svb_ra.iter_range(0, 5).collect();
-        assert_eq!(beginning, (0..5).collect::<Vec<u32>>());
+        // Test at beginning
+        let mut buffer = vec![0u32; 5];
+        ra.get_range(&mut buffer, 0..5);
+        assert_eq!(buffer, vec![0, 1, 2, 3, 4]);
+
+        // Test at end
+        let mut buffer = vec![0u32; 5];
+        ra.get_range(&mut buffer, 95..100);
+        assert_eq!(buffer, vec![95, 96, 97, 98, 99]);
     }
 
     #[test]
-    fn test_stream_vbyte_random_access_boundary_conditions() {
-        let data: Vec<u32> = (0..100).collect();
-        let svb_ra = StreamVByteRandomAccess::new(&data, 16);
+    fn test_random_access_mixed_value_sizes() {
+        let data: Vec<u32> = vec![
+            // 1 byte values
+            0,
+            1,
+            127,
+            255,
+            // 2 byte values
+            256,
+            1000,
+            32767,
+            65535,
+            // 3 byte values
+            65536,
+            100000,
+            1000000,
+            16777215,
+            // 4 byte values
+            16777216,
+            2000000000,
+            u32::MAX - 1,
+            u32::MAX,
+        ];
+        let ra = StreamVByteRandomAccess::new(&data, 8);
 
-        // Test empty range
-        let empty: Vec<u32> = svb_ra.iter_range(50, 0).collect();
-        assert_eq!(empty, Vec::<u32>::new());
+        // Test various ranges
+        let test_cases = vec![
+            (0..4, vec![0, 1, 127, 255]),
+            (4..8, vec![256, 1000, 32767, 65535]),
+            (8..12, vec![65536, 100000, 1000000, 16777215]),
+            (12..16, vec![16777216, 2000000000, u32::MAX - 1, u32::MAX]),
+            (2..6, vec![127, 255, 256, 1000]),
+        ];
 
-        // Test range extending beyond data
-        let beyond: Vec<u32> = svb_ra.iter_range(95, 10).collect();
-        assert_eq!(beyond, (95..100).collect::<Vec<u32>>());
-
-        // Test starting beyond data
-        let beyond_start: Vec<u32> = svb_ra.iter_range(150, 10).collect();
-        assert_eq!(beyond_start, Vec::<u32>::new());
-
-        // Test entire sequence
-        let all: Vec<u32> = svb_ra.iter_range(0, 100).collect();
-        assert_eq!(all, data);
-
-        // Test range larger than data
-        let oversized: Vec<u32> = svb_ra.iter_range(0, 200).collect();
-        assert_eq!(oversized, data);
-    }
-
-    #[test]
-    fn test_stream_vbyte_random_access_block_alignment() {
-        let data: Vec<u32> = (0..64).collect(); // 64 elements
-        let svb_ra = StreamVByteRandomAccess::new(&data, 16); // 16 elements per block
-
-        // Test ranges that align with block boundaries
-        let block1: Vec<u32> = svb_ra.iter_range(0, 16).collect();
-        assert_eq!(block1, (0..16).collect::<Vec<u32>>());
-
-        let block2: Vec<u32> = svb_ra.iter_range(16, 16).collect();
-        assert_eq!(block2, (16..32).collect::<Vec<u32>>());
-
-        // Test ranges that cross block boundaries
-        let cross_block: Vec<u32> = svb_ra.iter_range(10, 20).collect();
-        assert_eq!(cross_block, (10..30).collect::<Vec<u32>>());
-
-        // Test range spanning multiple blocks
-        let multi_block: Vec<u32> = svb_ra.iter_range(5, 50).collect();
-        assert_eq!(multi_block, (5..55).collect::<Vec<u32>>());
-    }
-
-    #[test]
-    fn test_stream_vbyte_random_access_different_block_sizes() {
-        let data: Vec<u32> = (0..100).collect();
-
-        // Test with different block sizes
-        for &block_size in &[4, 8, 16, 32] {
-            let svb_ra = StreamVByteRandomAccess::new(&data, block_size);
-
-            // Test various ranges
-            let portion1: Vec<u32> = svb_ra.iter_range(20, 15).collect();
-            assert_eq!(portion1, (20..35).collect::<Vec<u32>>());
-
-            let portion2: Vec<u32> = svb_ra.iter_range(0, block_size).collect();
-            assert_eq!(portion2, (0..block_size as u32).collect::<Vec<u32>>());
-
-            let portion3: Vec<u32> = svb_ra.iter_range(block_size, block_size).collect();
-            assert_eq!(
-                portion3,
-                ((block_size as u32)..(block_size as u32 * 2)).collect::<Vec<u32>>()
-            );
+        for (range, expected) in test_cases {
+            let mut buffer = vec![0u32; range.len()];
+            ra.get_range(&mut buffer, range.clone());
+            assert_eq!(buffer, expected, "Failed for range {:?}", range);
         }
     }
 
     #[test]
-    fn test_stream_vbyte_random_access_mixed_values() {
-        // Test with mixed value sizes to ensure proper decoding
+    fn test_random_access_vs_full_decode() {
         let mut data: Vec<u32> = Vec::new();
-        for i in 0..100 {
-            data.push(i); // Small values (1 byte each)
-            data.push(u32::MAX - i); // Large values (4 bytes each)
-            data.push(1 << (i % 20)); // Variable sizes
+        let mut state = 12345u64;
+
+        for _ in 0..1000 {
+            state = state.wrapping_mul(1103515245).wrapping_add(12345);
+            data.push((state >> 16) as u32 & 0xFFFF);
         }
 
-        let svb_ra = StreamVByteRandomAccess::new(&data, 24); // Block size multiple of 4
+        let ra = StreamVByteRandomAccess::new(&data, 64);
 
-        // Test various ranges with mixed data
-        let portion1: Vec<u32> = svb_ra.iter_range(0, 10).collect();
-        assert_eq!(portion1, data[0..10]);
+        // Test multiple random ranges
+        let test_ranges = vec![0..50, 100..200, 300..350, 500..750, 800..900, 950..1000];
 
-        let portion2: Vec<u32> = svb_ra.iter_range(50, 20).collect();
-        assert_eq!(portion2, data[50..70]);
+        for range in test_ranges {
+            let mut buffer = vec![0u32; range.len()];
+            ra.get_range(&mut buffer, range.clone());
 
-        let portion3: Vec<u32> = svb_ra.iter_range(100, 50).collect();
-        assert_eq!(portion3, data[100..150]);
-
-        // Test range crossing encoding boundaries
-        let portion4: Vec<u32> = svb_ra.iter_range(97, 10).collect();
-        assert_eq!(portion4, data[97..107]);
+            let expected = &data[range.clone()];
+            assert_eq!(buffer, expected, "Failed for range {:?}", range);
+        }
     }
 
     #[test]
-    fn test_stream_vbyte_random_access_u16() {
-        let data: Vec<u16> = (0..200).map(|i| (i % 65536) as u16).collect();
-        let svb_ra = StreamVByteRandomAccess::new(&data, 20);
+    fn test_random_access_large_ranges() {
+        let data: Vec<u32> = (0..10000).map(|i| (i * 17 + 13) % 65536).collect();
+        let ra = StreamVByteRandomAccess::new(&data, 128);
 
-        // Test basic functionality with u16
-        let portion: Vec<u16> = svb_ra.iter_range(50, 25).collect();
-        assert_eq!(portion, data[50..75]);
+        // Test large ranges
+        let test_ranges = vec![0..1000, 2000..3500, 5000..7500, 8000..10000];
 
-        // Test with larger ranges
-        let large_portion: Vec<u16> = svb_ra.iter_range(10, 100).collect();
-        assert_eq!(large_portion, data[10..110]);
+        for range in test_ranges {
+            let mut buffer = vec![0u32; range.len()];
+            ra.get_range(&mut buffer, range.clone());
+
+            let expected = &data[range.clone()];
+            assert_eq!(buffer, expected, "Failed for range {:?}", range);
+        }
     }
 
     #[test]
-    fn test_stream_vbyte_random_access_iterator_properties() {
-        let data: Vec<u32> = (0..50).collect();
-        let svb_ra = StreamVByteRandomAccess::new(&data, 12);
-
-        // Test iterator length and size hint
-        let mut iter = svb_ra.iter_range(10, 20);
-        assert_eq!(iter.len(), 20);
-        assert_eq!(iter.size_hint(), (20, Some(20)));
-
-        // Consume some elements and check remaining length
-        iter.next();
-        iter.next();
-        assert_eq!(iter.len(), 18);
-        assert_eq!(iter.size_hint(), (18, Some(18)));
-
-        // Test with partial ranges
-        let partial_iter = svb_ra.iter_range(45, 10); // Should only get 5 elements (45-49)
-        assert_eq!(partial_iter.len(), 5);
-
-        let collected: Vec<u32> = partial_iter.collect();
-        assert_eq!(collected, (45..50).collect::<Vec<u32>>());
-    }
-
-    #[test]
-    fn test_stream_vbyte_random_access_edge_positions() {
+    #[should_panic(expected = "Invalid range")]
+    fn test_random_access_invalid_range_start_after_end() {
         let data: Vec<u32> = (0..100).collect();
-        let svb_ra = StreamVByteRandomAccess::new(&data, 16);
-
-        // Test positions that are not aligned with encoding boundaries
-        for start_pos in [1, 3, 5, 7, 9, 11, 13, 15] {
-            let portion: Vec<u32> = svb_ra.iter_range(start_pos, 8).collect();
-            assert_eq!(portion, data[start_pos..start_pos + 8]);
-        }
-
-        // Test various lengths
-        for length in [1, 2, 3, 5, 7, 11, 13, 17, 19] {
-            let portion: Vec<u32> = svb_ra.iter_range(20, length).collect();
-            assert_eq!(portion, data[20..20 + length]);
-        }
+        let ra = StreamVByteRandomAccess::new(&data, 16);
+        let mut buffer = vec![0u32; 10];
+        ra.get_range(&mut buffer, 50..40); // start > end
     }
 
     #[test]
-    fn test_stream_vbyte_random_access_performance_patterns() {
-        // Test patterns that might reveal performance issues
-        let data: Vec<u32> = (0..1000).collect();
-        let svb_ra = StreamVByteRandomAccess::new(&data, 32);
+    #[should_panic(expected = "Invalid range")]
+    fn test_random_access_invalid_range_out_of_bounds() {
+        let data: Vec<u32> = (0..100).collect();
+        let ra = StreamVByteRandomAccess::new(&data, 16);
+        let mut buffer = vec![0u32; 10];
+        ra.get_range(&mut buffer, 90..110); // end > data.len()
+    }
 
-        // Sequential small reads
-        for i in (0..900).step_by(10) {
-            let portion: Vec<u32> = svb_ra.iter_range(i, 5).collect();
-            assert_eq!(portion, data[i..i + 5]);
-        }
-
-        // Large reads at various positions
-        for &start in &[0, 100, 200, 300, 400, 500, 600, 700, 800] {
-            let portion: Vec<u32> = svb_ra.iter_range(start, 50).collect();
-            assert_eq!(portion, data[start..start + 50]);
-        }
-
-        // Single element reads at various positions
-        for &pos in &[0, 1, 99, 100, 199, 200, 299, 300, 499, 500, 999] {
-            let portion: Vec<u32> = svb_ra.iter_range(pos, 1).collect();
-            assert_eq!(portion, vec![data[pos]]);
-        }
+    #[test]
+    #[should_panic(expected = "Output buffer is not large enough")]
+    fn test_random_access_buffer_too_small() {
+        let data: Vec<u32> = (0..100).collect();
+        let ra = StreamVByteRandomAccess::new(&data, 16);
+        let mut buffer = vec![0u32; 5]; // buffer too small for range
+        ra.get_range(&mut buffer, 10..20); // range needs 10 elements but buffer has 5
     }
 }
