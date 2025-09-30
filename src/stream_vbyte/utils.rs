@@ -27,6 +27,32 @@ pub(super) fn decode_16_aligned(buffer: &mut [u32; 16], controls: &[u8], data: &
     data_stream as usize - data.as_ptr() as usize
 }
 
+#[inline]
+pub(super) fn decode_less_than_four(
+    n: usize,
+    control_byte: u8,
+    data: &[u8],
+    output: &mut [u32],
+) -> usize {
+    debug_assert!(n <= 4);
+
+    let mut data_index = 0;
+    for i in 0..n {
+        let length = ((control_byte >> (6 - i * 2)) & 0b11) + 1;
+
+        let mut value_bytes = [0u8; 4];
+        value_bytes[4 - length as usize..]
+            .copy_from_slice(&data[data_index..data_index + length as usize]);
+
+        let value = u32::from_be_bytes(value_bytes);
+
+        output[i] = value;
+        data_index += length as usize;
+    }
+
+    data_index
+}
+
 /// Decode all the u32 values given a slice of control bytes and data bytes. Decoded values are written to `buffer` slice, which must be large enough to hold `length` values.
 /// The function returns the number of bytes read from the data slice.
 #[inline]

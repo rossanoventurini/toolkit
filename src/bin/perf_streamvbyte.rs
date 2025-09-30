@@ -18,7 +18,7 @@ fn benchmark_random_access(data: &[u32]) {
     println!("    === RANDOM ACCESS BENCHMARK ===");
 
     // Create StreamVByteRandomAccess with block size 128
-    let block_size = 128;
+    let block_size = 256;
     let start_time = Instant::now();
     let svb_ra = StreamVByteRandomAccess::new(data, block_size);
     let create_time = start_time.elapsed();
@@ -29,7 +29,7 @@ fn benchmark_random_access(data: &[u32]) {
     );
 
     // Generate random positions and lengths
-    let num_queries = 100_000;
+    let num_queries = 1_000_000;
     let mut queries = Vec::with_capacity(num_queries);
     let mut state = 67890u64; // Different seed from data generation
 
@@ -51,37 +51,60 @@ fn benchmark_random_access(data: &[u32]) {
         num_queries
     );
 
-    // Benchmark random access queries
+    // First run: Pure performance benchmark (no verification)
     let start_time = Instant::now();
     let mut total_elements = 0;
 
-    for (i, range) in queries.iter().enumerate() {
-        let mut buffer = vec![0u32; range.len()];
-        svb_ra.get_range(&mut buffer, range.clone());
-        total_elements += buffer.len();
+    // Allocate buffer once for the largest possible query (250 elements)
+    let mut buffer = vec![0u32; 250];
 
-        // Verify correctness for first few queries
-        if i < 5 {
-            let expected = &data[range.clone()];
-            assert_eq!(
-                buffer, expected,
-                "Random access query failed for range {:?}",
-                range
-            );
-        }
+    // Make next query depends on the previous one (seems to be unnneded becuse of the buffer)
+    let mut prev = 0;
+    for range in &queries {
+        let mut range = range.clone();
+        range.end = range.end - if prev % 2 == 0 { 0 } else { 1 };
+
+        let range_len = range.len();
+        svb_ra.get_range(&mut buffer[..range_len], range.clone());
+        prev = buffer[0] as usize; // Just to introduce some dependency
+
+        total_elements += range_len;
     }
 
     let query_time = start_time.elapsed();
 
-    // Calculate rates
+    // Second run: Verification of all queries
+    println!(
+        "    Verifying correctness of all {} queries...",
+        num_queries
+    );
+    let verification_start = Instant::now();
+
+    for range in &queries {
+        let range_len = range.len();
+        svb_ra.get_range(&mut buffer[..range_len], range.clone());
+
+        let expected = &data[range.clone()];
+        assert_eq!(
+            &buffer[..range_len],
+            expected,
+            "Random access query failed for range {:?}",
+            range
+        );
+    }
+
+    let verification_time = verification_start.elapsed();
+    println!("    Verification completed in {:?}", verification_time);
+
+    // Calculate rates (based on pure performance run, no verification overhead)
     let queries_per_second = num_queries as f64 / query_time.as_secs_f64();
     let elements_per_second = total_elements as f64 / query_time.as_secs_f64() / 1_000_000.0;
     let avg_query_time_us = query_time.as_micros() as f64 / num_queries as f64;
 
-    println!("    Random access results:");
+    println!("    Random access results (pure performance, no verification overhead):");
     println!("      Total queries: {}", num_queries);
     println!("      Total elements retrieved: {}", total_elements);
-    println!("      Query time: {:?}", query_time);
+    println!("      Pure query time: {:?}", query_time);
     println!("      Queries per second: {:.0}", queries_per_second);
     println!("      Elements rate: {:.2} M int/s", elements_per_second);
     println!("      Avg time per query: {:.3} μs", avg_query_time_us);
@@ -92,7 +115,7 @@ fn benchmark_streamvbyte() {
     println!("StreamVByte Benchmark");
     println!("====================");
 
-    let test_sizes = vec![1_000, 10_000, 100_000, 1_000_000];
+    let test_sizes = vec![10_000]; // vec![1_000, 10_000, 100_000, 1_000_000];
     let max_values = vec![256, 65_536, 16_777_216, u32::MAX];
 
     for &size in &test_sizes {
@@ -147,7 +170,7 @@ fn benchmark_streamvbyte() {
             println!("  Iterator vs Decode: {:.2}x", iter_rate / decode_rate);
 
             // Random access benchmark for larger datasets
-            if size >= 100_000 {
+            if size >= 10_000 {
                 benchmark_random_access(&data);
             }
         }
