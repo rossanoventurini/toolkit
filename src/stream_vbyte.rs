@@ -1,10 +1,13 @@
+use std::mem::offset_of;
+
 use mem_dbg::*;
+use rand::rand_core::le;
 use serde::{Deserialize, Serialize};
 
 // use crate::SVBEncodable;
 use crate::stream_vbyte::{
     self,
-    utils::{U32_LENGTHS, decode_slice_aligned},
+    utils::{U32_LENGTHS, decode_less_than_four, decode_slice_aligned},
 };
 
 pub mod utils;
@@ -43,79 +46,88 @@ impl StreamVByteRandomAccess {
         }
     }
 
-    pub fn get_range(&self, buffer: &mut [u32], range: std::ops::Range<usize>) {
-        assert!(
-            range.start < range.end && range.end <= self.svb.len(),
-            "Invalid range"
-        );
+    /// Skip the given range and return the number of bytes skipped in the data section, reading only the control bytes.
+    pub fn skip(&self, range: std::ops::Range<usize>) -> usize {
+        let mut to_skip = range.end - range.start;
 
-        let length = range.len();
-
-        assert!(buffer.len() >= length, "Output buffer is not large enough");
         let block_id = range.start / self.block_size;
-
-        let length = length.min(self.svb.size - range.start);
-
-        let mut starting_pos = block_id * self.block_size;
-        let mut to_skip = range.start - starting_pos;
-        let mut controls_index = starting_pos / 4;
-
-        // skip till a multiple of 4
         let mut offset_in_data = self.offsets[block_id];
+        let mut controls_index = range.start / 4;
+
+        // skip till a multiple of 4 using only control bytes
         offset_in_data += self.svb.controls[controls_index..controls_index + (to_skip / 4)]
             .iter()
             .map(|&control_byte| {
-                starting_pos += 4;
                 controls_index += 1;
                 to_skip -= 4;
                 U32_LENGTHS[control_byte as usize] as usize
             })
             .sum::<usize>();
 
-        if to_skip > 0 {
-            // The first control byte has the last 4 - to_skip values which are needed. Take them
-            // and decode them into a temporary buffer.
-            let mut tmp_buffer = [0; 4];
-            offset_in_data += stream_vbyte::utils::decode_less_than_four(
-                4,
-                self.svb.controls[controls_index],
-                &self.svb.data[offset_in_data..],
-                &mut tmp_buffer,
-            );
+        // skip the remaining values (less than 4)
+        for i in 0..to_skip {
+            offset_in_data +=
+                (((self.svb.controls[controls_index] >> (6 - i * 2)) & 0b11) + 1) as usize;
+        }
 
-            if length <= 4 - to_skip {
-                // All values are in the first control byte
-                for i in 0..length {
-                    buffer[i] = tmp_buffer[i + to_skip];
-                }
+        offset_in_data
+    }
+
+    pub fn get_range(&self, buffer: &mut [u32], range: std::ops::Range<usize>) {
+        assert!(
+            range.start < range.end && range.end <= self.svb.size,
+            "Invalid range",
+        );
+
+        assert!(
+            buffer.len() >= range.len(),
+            "Output buffer is not large enough"
+        );
+
+        let block_id = range.start / self.block_size;
+
+        // Skip the beginning of the block to reach the start of the range
+        let mut offset_in_data = self.skip(block_id * self.block_size..range.start);
+
+        let length = range.len().min(self.svb.size - range.start);
+
+        // Handle the case where the range does not start at a multiple of 4
+        let to_skip = range.start % 4;
+        let mut cur_position = 0;
+        if to_skip > 0 {
+            // Decode the first (partial) control byte
+            let mut control_byte = self.svb.controls[range.start / 4] << (to_skip * 2); // shift to ignore the already skipped values
+            offset_in_data += decode_less_than_four(
+                (4 - to_skip).min(length),
+                control_byte,
+                &self.svb.data[offset_in_data..],
+                buffer,
+            ); // min() is to deal with the very special case where both range.start and range.end are in the same control byte. In that case we decode only the required values from the first control byte.
+
+            cur_position = 4 - to_skip;
+            if cur_position >= length {
                 return;
             }
-
-            for i in 0..(4 - to_skip) {
-                buffer[i] = tmp_buffer[i + to_skip];
-            }
-            controls_index += 1;
         }
+        let controls_range = range.start.div_ceil(4)..range.end / 4; // end without potentially partial last control byte
 
-        let control_end = range.end / 4; // end without potentially partial last control byte
-        let left_to_decode = range.end % 4;
-
-        let controls = &self.svb.controls[controls_index..control_end];
-        let data = &self.svb.data[offset_in_data..];
-        let position = if to_skip > 0 { 4 - to_skip } else { 0 };
-
-        if !controls.is_empty() {
-            offset_in_data += decode_slice_aligned(&mut buffer[position..], controls, data);
-        }
-
-        let position = position + controls.len() * 4;
-
-        if left_to_decode > 0 {
-            stream_vbyte::utils::decode_less_than_four(
-                left_to_decode,
-                self.svb.controls[control_end],
+        if !controls_range.is_empty() {
+            offset_in_data += decode_slice_aligned(
+                &mut buffer[cur_position..],
+                &self.svb.controls[controls_range.clone()],
                 &self.svb.data[offset_in_data..],
-                &mut buffer[position..position + left_to_decode],
+            );
+            cur_position += controls_range.len() * 4;
+        }
+
+        let left_in_last_control_byte = range.end % 4;
+        if left_in_last_control_byte > 0 {
+            let control_byte = self.svb.controls[controls_range.end];
+            let _ = decode_less_than_four(
+                left_in_last_control_byte,
+                control_byte,
+                &self.svb.data[offset_in_data..],
+                &mut buffer[cur_position..],
             );
         }
     }

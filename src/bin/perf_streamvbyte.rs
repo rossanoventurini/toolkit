@@ -81,12 +81,11 @@ fn benchmark_random_access(data: &[u32]) {
     let verification_start = Instant::now();
 
     for range in &queries {
-        let range_len = range.len();
-        svb_ra.get_range(&mut buffer[..range_len], range.clone());
+        svb_ra.get_range(&mut buffer[..range.len()], range.clone());
 
         let expected = &data[range.clone()];
         assert_eq!(
-            &buffer[..range_len],
+            &buffer[..range.len()],
             expected,
             "Random access query failed for range {:?}",
             range
