@@ -24,7 +24,7 @@ impl StreamVByteRandomAccess {
         let mut offsets = Vec::with_capacity((input.len() + block_size - 1) / block_size);
         offsets.push(0);
 
-        for chunk in svb.controls.chunks(block_size / 4) {
+        for chunk in svb.control_bytes.chunks(block_size / 4) {
             let mut offset = *offsets.last().unwrap();
             for control_byte in chunk {
                 for j in 0..4 {
@@ -49,13 +49,14 @@ impl StreamVByteRandomAccess {
 
         let block_id = range.start / self.block_size;
         let mut offset_in_data = self.offsets[block_id];
-        let mut controls_index = range.start / 4;
+        let mut control_bytes_index = range.start / 4;
 
         // skip till a multiple of 4 using only control bytes
-        offset_in_data += self.svb.controls[controls_index..controls_index + (to_skip / 4)]
+        offset_in_data += self.svb.control_bytes
+            [control_bytes_index..control_bytes_index + (to_skip / 4)]
             .iter()
             .map(|&control_byte| {
-                controls_index += 1;
+                control_bytes_index += 1;
                 to_skip -= 4;
                 U32_LENGTHS[control_byte as usize] as usize
             })
@@ -63,8 +64,9 @@ impl StreamVByteRandomAccess {
 
         // skip the remaining values (less than 4)
         for i in 0..to_skip {
-            offset_in_data +=
-                (((self.svb.controls[controls_index] >> (6 - i * 2)) & 0b11) + 1) as usize;
+            offset_in_data += (((self.svb.control_bytes[control_bytes_index] >> (6 - i * 2))
+                & 0b11)
+                + 1) as usize;
         }
 
         offset_in_data
@@ -93,33 +95,33 @@ impl StreamVByteRandomAccess {
         let mut cur_position = 0;
         if to_skip > 0 {
             // Decode the first (partial) control byte
-            let mut control_byte = self.svb.controls[range.start / 4] << (to_skip * 2); // shift to ignore the already skipped values
+            let control_byte = self.svb.control_bytes[range.start / 4] << (to_skip * 2); // shift to ignore the already skipped values
             offset_in_data += decode_less_than_four(
                 (4 - to_skip).min(length),
                 control_byte,
                 &self.svb.data[offset_in_data..],
                 buffer,
-            ); // min() is to deal with the very special case where both range.start and range.end are in the same control byte. In that case we decode only the required values from the first control byte.
+            ); // .min() is to deal with the special case where the range is within the same control byte. In that case we decode only the required values from the first control byte.
 
             cur_position = 4 - to_skip;
             if cur_position >= length {
                 return;
             }
         }
-        let controls_range = range.start.div_ceil(4)..range.end / 4; // end without potentially partial last control byte
+        let control_bytes_range = range.start.div_ceil(4)..range.end / 4; // end without potentially partial last control byte
 
-        if !controls_range.is_empty() {
+        if !control_bytes_range.is_empty() {
             offset_in_data += decode_slice_aligned(
                 &mut buffer[cur_position..],
-                &self.svb.controls[controls_range.clone()],
+                &self.svb.control_bytes[control_bytes_range.clone()],
                 &self.svb.data[offset_in_data..],
             );
-            cur_position += controls_range.len() * 4;
+            cur_position += control_bytes_range.len() * 4;
         }
 
         let left_in_last_control_byte = range.end % 4;
         if left_in_last_control_byte > 0 {
-            let control_byte = self.svb.controls[controls_range.end];
+            let control_byte = self.svb.control_bytes[control_bytes_range.end];
             let _ = decode_less_than_four(
                 left_in_last_control_byte,
                 control_byte,
@@ -133,7 +135,7 @@ impl StreamVByteRandomAccess {
 /// An implementation of Stream VByte encoding/decoding.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, MemSize, MemDbg)]
 pub struct StreamVByte {
-    controls: Box<[u8]>,
+    control_bytes: Box<[u8]>,
     data: Box<[u8]>,
     size: usize,
 }
@@ -143,7 +145,7 @@ impl StreamVByte {
         if data.is_empty() {
             return Self::default();
         }
-        let mut controls = Vec::with_capacity((data.len() + 3) / 4);
+        let mut control_bytes = Vec::with_capacity((data.len() + 3) / 4);
         let mut encoded_data = Vec::with_capacity(data.len() * std::mem::size_of::<u32>());
         for chunk in data.chunks(4) {
             let mut control_byte: u8 = 0;
@@ -156,12 +158,12 @@ impl StreamVByte {
                 encoded_data.extend_from_slice(&bytes[std::mem::size_of::<u32>() - length..]);
             }
 
-            controls.push(control_byte);
+            control_bytes.push(control_byte);
         }
 
         let remaining = data.len() % 4;
         if remaining != 0 {
-            let last_control_byte = controls.last_mut().unwrap();
+            let last_control_byte = control_bytes.last_mut().unwrap();
             *last_control_byte <<= 2 * (4 - remaining);
         }
 
@@ -169,11 +171,11 @@ impl StreamVByte {
         // with 3 control bytes set to 0 and 15 data bytes set to 0.
         // TODO: Pad with the minimum number of bytes, maybe there are better ways to estimate
         // the required padding
-        controls.extend_from_slice(&[0u8; 3]);
+        control_bytes.extend_from_slice(&[0u8; 3]);
         encoded_data.extend_from_slice(&[0u8; 15]);
 
         Self {
-            controls: controls.into_boxed_slice(),
+            control_bytes: control_bytes.into_boxed_slice(),
             data: encoded_data.into_boxed_slice(),
             size: data.len(),
         }
@@ -184,15 +186,15 @@ impl StreamVByte {
             return Vec::new();
         }
         let mut output = vec![0u32; self.size];
-        let control_end = self.size / 4; // self.controls.len() cannot be used because of padding 
+        let control_end = self.size / 4; // self.control_bytes.len() cannot be used because of padding 
 
         let mut encoded_data_index =
-            decode_slice_aligned(&mut output, &self.controls[..control_end], &self.data);
+            decode_slice_aligned(&mut output, &self.control_bytes[..control_end], &self.data);
 
         let last_control_byte = if self.size % 4 == 0 {
             0
         } else {
-            self.controls[control_end]
+            self.control_bytes[control_end]
         };
 
         encoded_data_index += stream_vbyte::utils::decode_less_than_four(
@@ -225,14 +227,14 @@ impl StreamVByte {
     }
 
     pub fn iter(&self) -> StreamVByteIter<'_> {
-        StreamVByteIter::new(&self.controls, &self.data, self.size)
+        StreamVByteIter::new(&self.control_bytes, &self.data, self.size)
     }
 }
 
 /// Iterator for StreamVByte that decodes 4 values at a time and keeps them in a buffer.
 const BUFFER_SIZE: usize = 16;
 pub struct StreamVByteIter<'a> {
-    controls: &'a [u8],
+    control_bytes: &'a [u8],
     data: &'a [u8],
     size: usize,
     control_index: usize,
@@ -244,9 +246,9 @@ pub struct StreamVByteIter<'a> {
 
 impl<'a> StreamVByteIter<'a> {
     /// Creates a new iterator for the given `StreamVByte`.
-    fn new(controls: &'a [u8], data: &'a [u8], size: usize) -> Self {
+    fn new(control_bytes: &'a [u8], data: &'a [u8], size: usize) -> Self {
         Self {
-            controls,
+            control_bytes,
             data,
             size,
             control_index: 0,
@@ -264,22 +266,22 @@ impl<'a> StreamVByteIter<'a> {
         }
 
         // self.buffer_index = 0;
-        // let mut how_many_controls = BUFFER_SIZE / 4;
+        // let mut how_many_control_bytes = BUFFER_SIZE / 4;
 
         // if self.position + BUFFER_SIZE >= self.size {
-        //     how_many_controls = (self.size - self.position + 3) / 4;
+        //     how_many_control_bytes = (self.size - self.position + 3) / 4;
         //     self.buffer_index = BUFFER_SIZE - ((self.size - self.position) + 3) / 4 * 4;
         // }
 
         // self.data_index += crate::stream_vbyte::utils::decode_slice_aligned(
         //     &mut self.buffer[self.buffer_index..],
-        //     &self.controls[self.control_index..self.control_index + how_many_controls],
+        //     &self.control_bytes[self.control_index..self.control_index + how_many_control_bytes],
         //     &self.data[self.data_index..],
         // );
         unsafe {
             self.data_index += crate::stream_vbyte::utils::decode_16_aligned(
                 &mut self.buffer,
-                &self.controls.get_unchecked(self.control_index..),
+                &self.control_bytes.get_unchecked(self.control_index..),
                 &self.data.get_unchecked(self.data_index..),
             );
         }
@@ -355,7 +357,7 @@ mod tests {
         let encoded = StreamVByte::encode(&data);
         let decoded = encoded.decode();
 
-        assert_eq!(encoded.controls.len(), (data.len() + 3) / 4 + 3); // +3 for padding
+        assert_eq!(encoded.control_bytes.len(), (data.len() + 3) / 4 + 3); // +3 for padding
         assert_eq!(decoded, data);
         assert_eq!(encoded.len(), data.len());
         assert!(!encoded.is_empty());
@@ -638,7 +640,7 @@ mod tests {
         let small_values: Vec<u32> = (0..10000).map(|i| i % 256).collect(); // All 1-byte values
         let encoded = StreamVByte::encode(&small_values);
         let original_size = small_values.len() * 4; // 4 bytes per u32
-        let compressed_size = encoded.controls.len() + encoded.data.len();
+        let compressed_size = encoded.control_bytes.len() + encoded.data.len();
 
         // Should achieve significant compression for small values
         assert!(compressed_size < original_size);
