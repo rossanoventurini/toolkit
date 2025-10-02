@@ -22,6 +22,8 @@
 ///
 /// # Examples
 /// ```
+/// use toolkit::algorithms::majority;
+///
 /// let nums = [3, 3, 4, 2, 3, 3, 5];
 /// assert_eq!(majority(&nums), Some(&3));
 ///
