@@ -23,7 +23,12 @@ pub mod stream_vbyte;
 pub use stream_vbyte::StreamVByte;
 // pub use stream_vbyte::StreamVByteRandomAccess;
 
+pub use stream_vbyte::StreamVByteIter;
+pub use stream_vbyte::StreamVByteRandomAccess;
+
 pub mod gen_sequences;
+
+pub mod algorithms;
 
 pub mod utils;
 
