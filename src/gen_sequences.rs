@@ -73,8 +73,8 @@ impl<T: Integer + Copy, I: Iterator<Item = T>> Iterator for DGaps<T, I> {
     }
 }
 
-/// Given a strictly increasing vector v, it returns a vector with all
-/// the values not in v.
+/// Given a strictly increasing vector v, it returns a vector
+/// with all the values not in v.
 ///
 /// ## Examples
 /// ```
