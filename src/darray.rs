@@ -227,7 +227,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// let v: Vec<usize> = da.ones().collect();
     /// assert_eq!(v, vv);
     /// ```
-    pub fn ones(&self) -> BitVectorBitPositionsIter<true> {
+    pub fn ones(&self) -> BitVectorBitPositionsIter<'_, true> {
         self.bv.ones()
     }
 
@@ -244,7 +244,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// let v: Vec<usize> = da.ones_with_pos(2).collect();
     /// assert_eq!(v, vec![63, 128, 129, 254, 1026]);
     /// ```
-    pub fn ones_with_pos(&self, pos: usize) -> BitVectorBitPositionsIter<true> {
+    pub fn ones_with_pos(&self, pos: usize) -> BitVectorBitPositionsIter<'_, true> {
         self.bv.ones_with_pos(pos)
     }
 
@@ -262,7 +262,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// let v: Vec<usize> = da.zeros().collect();
     /// assert_eq!(v, negate_vector(&vv));
     /// ```
-    pub fn zeros(&self) -> BitVectorBitPositionsIter<false> {
+    pub fn zeros(&self) -> BitVectorBitPositionsIter<'_, false> {
         self.bv.zeros()
     }
 
@@ -279,7 +279,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// let v: Vec<usize> = da.zeros_with_pos(2).collect();
     /// assert_eq!(v, vec![3]);
     /// ```
-    pub fn zeros_with_pos(&self, pos: usize) -> BitVectorBitPositionsIter<false> {
+    pub fn zeros_with_pos(&self, pos: usize) -> BitVectorBitPositionsIter<'_, false> {
         self.bv.zeros_with_pos(pos)
     }
 

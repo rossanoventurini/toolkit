@@ -1,5 +1,4 @@
 #![feature(unchecked_shifts)]
-#![feature(generic_const_exprs)]
 //! This module provides a collection of bit manipulation utilities, including
 //! bit vectors, bit fields, and various utility functions for working with bits.
 //! This is a preliminary version and may undergo changes in the next future.
