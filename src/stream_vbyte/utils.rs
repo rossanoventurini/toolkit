@@ -70,8 +70,7 @@ pub(super) fn decode_slice_aligned(buffer: &mut [u32], controls: &[u8], data: &[
     let data_stream_end = (data.last().unwrap() as *const u8).wrapping_add(1);
     let mut data_stream_offset = 0usize;
 
-    // Without manual loop unroll, performance is quite bad on Intel Xeon E3
-    // Decode loop unrolling
+    // Decode with loop unrolling
     const UNROLL_FACTOR: usize = 4;
     let n_unrolled_iterations = iterations / UNROLL_FACTOR;
 

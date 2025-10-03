@@ -1,4 +1,5 @@
 #![feature(unchecked_shifts)]
+#![feature(generic_const_exprs)]
 //! This module provides a collection of bit manipulation utilities, including
 //! bit vectors, bit fields, and various utility functions for working with bits.
 //! This is a preliminary version and may undergo changes in the next future.
@@ -16,12 +17,9 @@ pub use darray::DArray;
 pub mod elias_fano;
 pub use elias_fano::EliasFano;
 pub use elias_fano::EliasFanoBuilder;
-use num::PrimInt;
-use num::traits::{FromBytes, ToBytes};
 
 pub mod stream_vbyte;
 pub use stream_vbyte::StreamVByte;
-// pub use stream_vbyte::StreamVByteRandomAccess;
 
 pub use stream_vbyte::StreamVByteIter;
 pub use stream_vbyte::StreamVByteRandomAccess;
@@ -31,18 +29,6 @@ pub mod gen_sequences;
 pub mod algorithms;
 
 pub mod utils;
-
-/// Marker trait for unsigned integer types that can be encoded with Stream_Vbyte.
-pub trait SVBEncodable: PrimInt + FromBytes + ToBytes + Copy + std::fmt::Debug + Default {}
-
-/// Implements Unsigned for all primitive unsigned integer types.
-macro_rules! impl_svb_encodable {
-    ($($t:ty),*) => {
-        $(impl SVBEncodable for $t {})*
-    };
-}
-
-impl_svb_encodable!(u8, u16, u32);
 
 /// A trait for the support of `get` query over the binary alphabet.
 pub trait AccessBin {

@@ -1,12 +1,15 @@
 use mem_dbg::*;
 use serde::{Deserialize, Serialize};
 
+// TODO: currently encoding is not using explicitly  SIMD instructions. It can be made from 4x to 8x faster.
+
 // use crate::SVBEncodable;
 use crate::stream_vbyte::{
     self,
     utils::{U32_LENGTHS, decode_less_than_four, decode_slice_aligned},
 };
 
+pub mod new_utils;
 pub mod utils;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, MemSize, MemDbg)]
