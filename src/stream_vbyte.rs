@@ -217,25 +217,25 @@ impl<T: SVBEncodable + Default> StreamVByte<T> {
         self.size == 0
     }
 
-    pub fn iter(&self) -> StreamVByteIter<'_> {
+    pub fn iter(&self) -> StreamVByteIter<'_, T> {
         StreamVByteIter::new(&self.control_bytes, &self.data, self.size)
     }
 }
 
 /// Iterator for StreamVByte that decodes 4 values at a time and keeps them in a buffer.
 const BUFFER_SIZE: usize = 16;
-pub struct StreamVByteIter<'a> {
+pub struct StreamVByteIter<'a, T: SVBEncodable> {
     control_bytes: &'a [u8],
     data: &'a [u8],
     size: usize,
     control_index: usize,
     data_index: usize,
-    buffer: [u32; BUFFER_SIZE],
+    buffer: [T; BUFFER_SIZE],
     buffer_index: usize,
     position: usize,
 }
 
-impl<'a> StreamVByteIter<'a> {
+impl<'a, T: SVBEncodable + Default> StreamVByteIter<'a, T> {
     /// Creates a new iterator for the given `StreamVByte`.
     fn new(control_bytes: &'a [u8], data: &'a [u8], size: usize) -> Self {
         Self {
@@ -244,7 +244,7 @@ impl<'a> StreamVByteIter<'a> {
             size,
             control_index: 0,
             data_index: 0,
-            buffer: [0; BUFFER_SIZE],
+            buffer: [T::default(); BUFFER_SIZE],
             buffer_index: BUFFER_SIZE, // Start with empty buffer (index points past last element)
             position: 0,
         }
@@ -265,12 +265,12 @@ impl<'a> StreamVByteIter<'a> {
         }
 
         self.buffer_index = 0;
-        self.control_index += 4;
+        self.control_index += 16 / T::LANES;
     }
 }
 
-impl<'a> Iterator for StreamVByteIter<'a> {
-    type Item = u32;
+impl<'a, T: SVBEncodable + Default> Iterator for StreamVByteIter<'a, T> {
+    type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
         // If buffer is empty or we've consumed all values in current buffer, fill it
@@ -295,7 +295,7 @@ impl<'a> Iterator for StreamVByteIter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for StreamVByteIter<'a> {
+impl<'a, T: SVBEncodable + Default> ExactSizeIterator for StreamVByteIter<'a, T> {
     fn len(&self) -> usize {
         self.size - self.position
     }
@@ -982,6 +982,17 @@ mod tests {
     }
 
     #[test]
+    fn test_iterator_empty_u16() {
+        let data: Vec<u16> = vec![];
+        let encoded = StreamVByte::encode(&data);
+        let iter_result: Vec<u16> = encoded.iter().collect();
+
+        assert_eq!(iter_result, data);
+        assert_eq!(encoded.iter().len(), 0);
+        assert_eq!(encoded.iter().size_hint(), (0, Some(0)));
+    }
+
+    #[test]
     fn test_iterator_single_element() {
         let data: Vec<u32> = vec![42];
         let encoded = StreamVByte::encode(&data);
@@ -993,10 +1004,32 @@ mod tests {
     }
 
     #[test]
+    fn test_iterator_single_element_u16() {
+        let data: Vec<u16> = vec![42];
+        let encoded = StreamVByte::encode(&data);
+        let iter_result: Vec<u16> = encoded.iter().collect();
+
+        assert_eq!(iter_result, data);
+        assert_eq!(encoded.iter().len(), 1);
+        assert_eq!(encoded.iter().size_hint(), (1, Some(1)));
+    }
+
+    #[test]
     fn test_iterator_basic_sequence() {
         let data: Vec<u32> = vec![1, 2, 3, 4, 5, 100, 1000, 10000];
         let encoded = StreamVByte::encode(&data);
         let iter_result: Vec<u32> = encoded.iter().collect();
+
+        assert_eq!(iter_result, data);
+        assert_eq!(encoded.iter().len(), data.len());
+        assert_eq!(encoded.iter().size_hint(), (data.len(), Some(data.len())));
+    }
+
+    #[test]
+    fn test_iterator_basic_sequence_u16() {
+        let data: Vec<u16> = vec![1, 2, 3, 4, 5, 100, 1000, 10000];
+        let encoded = StreamVByte::encode(&data);
+        let iter_result: Vec<u16> = encoded.iter().collect();
 
         assert_eq!(iter_result, data);
         assert_eq!(encoded.iter().len(), data.len());
@@ -1018,6 +1051,20 @@ mod tests {
     }
 
     #[test]
+    fn test_iterator_vs_decode_u16() {
+        // Test that iterator produces same results as decode() for u16
+        let data: Vec<u16> = (0..1000).map(|i| ((i * 17 + 13) % 65536) as u16).collect();
+        let encoded = StreamVByte::encode(&data);
+
+        let decoded = encoded.decode();
+        let iter_result: Vec<u16> = encoded.iter().collect();
+
+        assert_eq!(decoded, data);
+        assert_eq!(iter_result, data);
+        assert_eq!(decoded, iter_result);
+    }
+
+    #[test]
     fn test_iterator_exact_multiples_of_16() {
         // Test sequences that are exact multiples of buffer size (16)
         for &size in &[16, 32, 48, 64, 160, 1600] {
@@ -1030,12 +1077,36 @@ mod tests {
     }
 
     #[test]
+    fn test_iterator_exact_multiples_of_16_u16() {
+        // Test sequences that are exact multiples of buffer size (16) for u16
+        for &size in &[16, 32, 48, 64, 160, 1600] {
+            let data: Vec<u16> = (0..size).map(|x| x as u16).collect();
+            let encoded = StreamVByte::encode(&data);
+            let iter_result: Vec<u16> = encoded.iter().collect();
+
+            assert_eq!(iter_result, data, "Failed for size {}", size);
+        }
+    }
+
+    #[test]
     fn test_iterator_non_multiples_of_16() {
         // Test sequences that are NOT multiples of buffer size
         for &size in &[1, 7, 15, 17, 31, 33, 47, 49, 63, 65, 159, 161] {
             let data: Vec<u32> = (0..size).collect();
             let encoded = StreamVByte::encode(&data);
             let iter_result: Vec<u32> = encoded.iter().collect();
+
+            assert_eq!(iter_result, data, "Failed for size {}", size);
+        }
+    }
+
+    #[test]
+    fn test_iterator_non_multiples_of_16_u16() {
+        // Test sequences that are NOT multiples of buffer size for u16
+        for &size in &[1, 7, 15, 17, 31, 33, 47, 49, 63, 65, 159, 161] {
+            let data: Vec<u16> = (0..size).map(|x| x as u16).collect();
+            let encoded = StreamVByte::encode(&data);
+            let iter_result: Vec<u16> = encoded.iter().collect();
 
             assert_eq!(iter_result, data, "Failed for size {}", size);
         }
@@ -1072,10 +1143,48 @@ mod tests {
     }
 
     #[test]
+    fn test_iterator_mixed_value_sizes_u16() {
+        let data: Vec<u16> = vec![
+            // 1 byte values
+            0,
+            1,
+            127,
+            255,
+            // 2 byte values
+            256,
+            1000,
+            32767,
+            65535,
+            // More mixed values
+            42,
+            500,
+            1024,
+            60000,
+            100,
+            50000,
+            200,
+            u16::MAX,
+        ];
+        let encoded = StreamVByte::encode(&data);
+        let iter_result: Vec<u16> = encoded.iter().collect();
+
+        assert_eq!(iter_result, data);
+    }
+
+    #[test]
     fn test_iterator_large_sequence() {
         let data: Vec<u32> = (0..10000).map(|i| (i * 17 + 13) % 65536).collect();
         let encoded = StreamVByte::encode(&data);
         let iter_result: Vec<u32> = encoded.iter().collect();
+
+        assert_eq!(iter_result, data);
+    }
+
+    #[test]
+    fn test_iterator_large_sequence_u16() {
+        let data: Vec<u16> = (0..10000).map(|i| ((i * 17 + 13) % 65536) as u16).collect();
+        let encoded = StreamVByte::encode(&data);
+        let iter_result: Vec<u16> = encoded.iter().collect();
 
         assert_eq!(iter_result, data);
     }
