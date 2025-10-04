@@ -10,7 +10,7 @@ pub trait SVBEncodable: Sized + PrimInt {
     const CONTROL_BITS: usize = (usize::BITS - (Self::BYTES - 1).leading_zeros()) as usize;
     const N_CONTROL: usize = 8 / Self::CONTROL_BITS;
     const CONTROL_MASK: u8 = (1 << Self::CONTROL_BITS) - 1;
-    const MASKS: [(Self::Reg, usize); 256];
+    const MASKS: [Self::Reg; 256];
     const LENGTHS: [u8; 256];
 
     fn encode_value(v: Self, data: &mut [u8]) -> usize;
@@ -60,11 +60,11 @@ pub trait SVBEncodable: Sized + PrimInt {
     ///
     /// Types of this function tries to implement safety guardrails as much as possible. Namely:
     /// `output` - is a reference to the buffer of 4 u32 values;
-    /// `input` - is a reference to u8 array of unspecified length (`control_word` speciefies how much will be decoded);
+    /// `input` - is a reference to u8 array of unspecified length (`control_byte` speciefies how much will be decoded);
     //
     /// Technically the encoded length can be calculated from control word directly using horizontal 2-bit sum
     /// ```rust,ignore
-    /// let result = *control_word;
+    /// let result = *control_byte;
     /// let result = ((result & 0b11001100) >> 2) + (result & 0b00110011);
     /// let result = (result >> 4) + (result & 0b1111) + 4;
     /// ```
@@ -73,8 +73,8 @@ pub trait SVBEncodable: Sized + PrimInt {
     ///
     /// [^1]: [Bit hacking versus memoization: a Stream VByte example](https://lemire.me/blog/2017/11/28/bit-hacking-versus-memoization-a-stream-vbyte-example/)
     #[inline]
-    fn simd_decode(input: &[u8; 16], control_word: u8, output: &mut Self::Reg) -> usize {
-        let (ref mask, encoded_len) = Self::MASKS[control_word as usize];
+    fn simd_decode(input: &[u8; 16], control_byte: u8, output: &mut Self::Reg) -> usize {
+        let mask = &Self::MASKS[control_byte as usize];
         unsafe {
             // Make sure its ok to cast `mask` to `__m128i`
             debug_assert_eq!(core::mem::size_of::<Self>() * Self::LANES, 16);
@@ -85,7 +85,7 @@ pub trait SVBEncodable: Sized + PrimInt {
             let q = <Self::Reg as AsMut<[Self]>>::as_mut(output).as_mut_ptr();
             _mm_storeu_si128(q as *mut __m128i, answer);
         }
-        encoded_len
+        Self::LENGTHS[control_byte as usize] as usize
     }
 }
 
@@ -153,8 +153,8 @@ by [Denis Bazhenov](https://github.com/bazhenov/svbyte/blob/master/src/lib.rs).
 
 [_mm_shuffle_epi8]: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=shuffle_epi8&ig_expand=6097
 */
-const fn shuffle_masks_u32() -> [([u32; 4], usize); 256] {
-    let mut masks = [([0u32; 4], 0usize); 256];
+const fn shuffle_masks_u32() -> [[u32; 4]; 256] {
+    let mut masks = [[0u32; 4]; 256];
 
     let mut a = 1;
     while a <= 4 {
@@ -175,7 +175,7 @@ const fn shuffle_masks_u32() -> [([u32; 4], usize); 256] {
                     // counting in the index must be 0 based (eg. length of 1 is `00`, not `01`), hence `a - 1`
                     let idx = (a - 1) << 6 | (b - 1) << 4 | (c - 1) << 2 | (d - 1);
                     assert!(a + b + c + d <= 16);
-                    masks[idx] = (mask, a + b + c + d);
+                    masks[idx] = mask;
                     d += 1;
                 }
                 c += 1;
@@ -187,8 +187,8 @@ const fn shuffle_masks_u32() -> [([u32; 4], usize); 256] {
     masks
 }
 
-const fn shuffle_masks_u16() -> [([u16; 8], usize); 256] {
-    let mut masks = [([0u16; 8], 0usize); 256];
+const fn shuffle_masks_u16() -> [[u16; 8]; 256] {
+    let mut masks = [[0u16; 8]; 256];
 
     let mut a = 1;
     while a <= 2 {
@@ -228,7 +228,7 @@ const fn shuffle_masks_u16() -> [([u16; 8], usize); 256] {
                                         | (g - 1) << 1
                                         | (h - 1);
                                     assert!(a + b + c + d + e + f + g + h <= 16);
-                                    masks[idx] = (mask, a + b + c + d + e + f + g + h);
+                                    masks[idx] = mask;
                                     h += 1;
                                 }
                                 g += 1;
@@ -287,7 +287,7 @@ const fn shuffle_mask_u16(len: usize, offset: usize) -> u16 {
 impl SVBEncodable for u32 {
     type Reg = [u32; Self::LANES];
 
-    const MASKS: [([u32; 4], usize); 256] = shuffle_masks_u32();
+    const MASKS: [[u32; 4]; 256] = shuffle_masks_u32();
     const LENGTHS: [u8; 256] = lengths_u32();
 
     #[inline]
@@ -312,7 +312,7 @@ impl SVBEncodable for u32 {
 impl SVBEncodable for u16 {
     type Reg = [u16; Self::LANES];
 
-    const MASKS: [([u16; 8], usize); 256] = shuffle_masks_u16();
+    const MASKS: [[u16; 8]; 256] = shuffle_masks_u16();
     const LENGTHS: [u8; 256] = lengths_u16();
 
     #[inline]
@@ -350,7 +350,7 @@ pub(super) fn decode_slice_aligned<T: SVBEncodable>(
     let mut iterations = controls.len();
 
     let mut buffer: *mut T::Reg = buffer.as_mut_ptr().cast();
-    let mut control_words = controls.as_ptr();
+    let mut control_bytes = controls.as_ptr();
     let mut data_stream = data.as_ptr();
     let data_stream_end = (data.last().unwrap() as *const u8).wrapping_add(1);
     let mut data_stream_offset = 0usize;
@@ -366,9 +366,9 @@ pub(super) fn decode_slice_aligned<T: SVBEncodable>(
                 "At least 16 bytes should be available in the data stream"
             );
             let encoded_len =
-                unsafe { T::simd_decode(&*data_stream.cast(), *control_words, &mut *buffer) };
+                unsafe { T::simd_decode(&*data_stream.cast(), *control_bytes, &mut *buffer) };
 
-            control_words = control_words.wrapping_add(1);
+            control_bytes = control_bytes.wrapping_add(1);
             buffer = buffer.wrapping_add(1);
 
             data_stream = data_stream.wrapping_add(encoded_len);
@@ -385,9 +385,9 @@ pub(super) fn decode_slice_aligned<T: SVBEncodable>(
             "At least 16 bytes should be available in the data stream"
         );
         let encoded_len =
-            unsafe { T::simd_decode(&*data_stream.cast(), *control_words, &mut *buffer) };
+            unsafe { T::simd_decode(&*data_stream.cast(), *control_bytes, &mut *buffer) };
 
-        control_words = control_words.wrapping_add(1);
+        control_bytes = control_bytes.wrapping_add(1);
         buffer = buffer.wrapping_add(1);
 
         data_stream = data_stream.wrapping_add(encoded_len);
@@ -404,14 +404,14 @@ pub(super) fn decode_16_aligned<T: SVBEncodable>(
     data: &[u8],
 ) -> usize {
     let mut buffer_ptr = buffer.as_mut_ptr().cast::<T::Reg>();
-    let mut control_words = controls.as_ptr();
+    let mut control_bytes = controls.as_ptr();
     let mut data_stream = data.as_ptr();
 
     for _ in 0..(16 / T::LANES) {
         let encoded_len =
-            unsafe { T::simd_decode(&*data_stream.cast(), *control_words, &mut *buffer_ptr) };
+            unsafe { T::simd_decode(&*data_stream.cast(), *control_bytes, &mut *buffer_ptr) };
 
-        control_words = control_words.wrapping_add(1);
+        control_bytes = control_bytes.wrapping_add(1);
         buffer_ptr = buffer_ptr.wrapping_add(1);
 
         data_stream = data_stream.wrapping_add(encoded_len);
