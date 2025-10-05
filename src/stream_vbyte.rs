@@ -1,3 +1,64 @@
+//! Stream VByte encoding and decoding implementation.
+//!
+//! This module provides an efficient implementation of Stream VByte (SVB) compression,
+//! a variable-byte encoding scheme that compresses sequences of unsigned integers.
+//!
+//! # Stream VByte Overview
+//!
+//! Stream VByte is a compression technique that encodes integers using a variable number
+//! of bytes depending on their magnitude. It separates control information from data:
+//! - **Control bytes**: Store metadata about how many bytes each value uses
+//! - **Data bytes**: Store the actual compressed values
+//!
+//! This separation allows for efficient SIMD processing and random access capabilities.
+//!
+//! # Supported Types
+//!
+//! Currently supports:
+//! - `u32` - 4 values encoded per control byte
+//! - `u16` - 8 values encoded per control byte
+//!
+//! # Basic Usage
+//!
+//! ```rust
+//! use toolkit::stream_vbyte::StreamVByte;
+//!
+//! // Encode a sequence of integers
+//! let data: Vec<u32> = vec![1, 2, 100, 1000, 10000];
+//! let encoded = StreamVByte::encode(&data);
+//!
+//! // Decode the sequence
+//! let decoded = encoded.decode();
+//! assert_eq!(decoded, data);
+//!
+//! // Iterate over values without full decompression
+//! for value in encoded.iter() {
+//!     println!("Value: {}", value);
+//! }
+//! ```
+//!
+//! # Random Access
+//!
+//! For random access to compressed data, use `StreamVByteRandomAccess`:
+//!
+//! ```rust
+//! use toolkit::stream_vbyte::StreamVByteRandomAccess;
+//!
+//! let data: Vec<u32> = (0..1000).collect();
+//! let ra = StreamVByteRandomAccess::new(&data, 64); // 64 = block size
+//!
+//! // Access a range without decompressing the entire sequence
+//! let mut buffer = vec![0u32; 10];
+//! ra.get_range(&mut buffer, 100..110);
+//! ```
+//!
+//! # Performance Notes
+//!
+//! - Encoding is currently scalar (TODO: SIMD implementation would provide 4-8x speedup)
+//! - Decoding uses SIMD where possible for better performance
+//! - Best compression for sequences with many small values
+//! - Works on sequences of any length (not required to be multiples of 4/8)
+
 use mem_dbg::*;
 use serde::{Deserialize, Serialize};
 
@@ -7,6 +68,34 @@ use crate::stream_vbyte::utils::SVBEncodable;
 
 pub mod utils;
 
+/// Random access wrapper for Stream VByte encoded data.
+///
+/// This structure enables efficient random access to compressed data by maintaining
+/// a block-based index. It divides the encoded sequence into blocks and stores offsets
+/// to quickly locate any range without full decompression.
+///
+/// # Type Parameters
+///
+/// * `T` - The unsigned integer type being encoded (must implement `SVBEncodable`). Currently supports `u32` and `u16`.
+///
+/// # Fields
+///
+/// * `svb` - The underlying Stream VByte encoded data
+/// * `offsets` - Byte offsets for each block in the data section
+/// * `block_size` - Number of values per block (must be multiple of T::N_CONTROL)
+///
+/// # Examples
+///
+/// ```rust
+/// use toolkit::stream_vbyte::StreamVByteRandomAccess;
+///
+/// let data: Vec<u32> = (0..1000).collect();
+/// let ra = StreamVByteRandomAccess::new(&data, 64);
+///
+/// let mut buffer = vec![0u32; 10];
+/// ra.get_range(&mut buffer, 500..510);
+/// assert_eq!(buffer, (500..510).collect::<Vec<u32>>());
+/// ```
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, MemSize, MemDbg)]
 pub struct StreamVByteRandomAccess<T: SVBEncodable> {
     svb: StreamVByte<T>,
@@ -15,6 +104,29 @@ pub struct StreamVByteRandomAccess<T: SVBEncodable> {
 }
 
 impl<T: SVBEncodable + Default> StreamVByteRandomAccess<T> {
+    /// Creates a new random access structure from the input data.
+    ///
+    /// The data is first encoded using Stream VByte, then divided into blocks
+    /// of the specified size. An index of byte offsets is built to enable
+    /// efficient random access to any block.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The slice of values to encode
+    /// * `block_size` - Number of values per block (must be multiple of T::N_CONTROL)
+    ///
+    /// # Panics
+    ///
+    /// Panics if `block_size` is not a multiple of `T::N_CONTROL` (4 for u32, 8 for u16).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use toolkit::stream_vbyte::StreamVByteRandomAccess;
+    ///
+    /// let data: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    /// let ra = StreamVByteRandomAccess::new(&data, 4); // 4 values per block
+    /// ```
     pub fn new(input: &[T], block_size: usize) -> Self {
         assert!(
             block_size % T::N_CONTROL == 0,
@@ -43,7 +155,25 @@ impl<T: SVBEncodable + Default> StreamVByteRandomAccess<T> {
         }
     }
 
-    /// Skip the given range and return the number of bytes skipped in the data section, reading only the control bytes.
+    /// Skips the given range and returns the byte offset in the data section.
+    ///
+    /// This method efficiently calculates how many bytes to skip in the compressed
+    /// data to reach a specific position, using only the control bytes for the
+    /// calculation. This is a key optimization for random access.
+    ///
+    /// # Arguments
+    ///
+    /// * `range` - The range of values to skip
+    ///
+    /// # Returns
+    ///
+    /// The byte offset in the data section after skipping the range.
+    ///
+    /// # Implementation Details
+    ///
+    /// - Uses block offsets to quickly jump to the relevant block
+    /// - Processes complete control bytes efficiently
+    /// - Handles remaining values (< N_CONTROL) bit by bit
     pub fn skip(&self, range: std::ops::Range<usize>) -> usize {
         let mut to_skip = range.end - range.start;
 
@@ -74,6 +204,35 @@ impl<T: SVBEncodable + Default> StreamVByteRandomAccess<T> {
         offset_in_data
     }
 
+    /// Decodes a specific range of values into the provided buffer.
+    ///
+    /// This is the main random access operation. It efficiently decodes only
+    /// the requested range without decompressing the entire sequence.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer` - Output buffer to write decoded values (must be large enough)
+    /// * `range` - The range of indices to decode
+    ///
+    /// # Panics
+    ///
+    /// Panics if:
+    /// - `range.start >= range.end`
+    /// - `range.end > self.svb.size`
+    /// - `buffer.len() < range.len()`
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use toolkit::stream_vbyte::StreamVByteRandomAccess;
+    ///
+    /// let data: Vec<u32> = (0..100).collect();
+    /// let ra = StreamVByteRandomAccess::new(&data, 16);
+    ///
+    /// let mut buffer = vec![0u32; 20];
+    /// ra.get_range(&mut buffer, 40..60);
+    /// assert_eq!(buffer, (40..60).collect::<Vec<u32>>());
+    /// ```
     pub fn get_range(&self, buffer: &mut [T], range: std::ops::Range<usize>) {
         assert!(
             range.start < range.end && range.end <= self.svb.size,
@@ -135,7 +294,46 @@ impl<T: SVBEncodable + Default> StreamVByteRandomAccess<T> {
     }
 }
 
-/// An implementation of Stream VByte encoding/decoding.
+/// Core Stream VByte encoding/decoding structure.
+///
+/// This structure stores compressed integer sequences using the Stream VByte format,
+/// which separates control information from data for efficient processing.
+///
+/// # Type Parameters
+///
+/// * `T` - The unsigned integer type being encoded (must implement `SVBEncodable`)
+///
+/// # Fields
+///
+/// * `control_bytes` - Control information indicating byte length for each value
+/// * `data` - The compressed data bytes
+/// * `size` - Number of original values in the sequence
+/// * `_marker` - Zero-sized type marker for the generic parameter
+///
+/// # Format Details
+///
+/// For `u32` (N_CONTROL = 4):
+/// - Each control byte encodes 4 values using 2 bits per value
+/// - 2 bits indicate byte length: 00=1 byte, 01=2 bytes, 10=3 bytes, 11=4 bytes
+///
+/// For `u16` (N_CONTROL = 8):
+/// - Each control byte encodes 8 values using 1 bit per value
+/// - 1 bit indicates byte length: 0=1 byte, 1=2 bytes
+///
+/// # Examples
+///
+/// ```rust
+/// use toolkit::stream_vbyte::StreamVByte;
+///
+/// let data = vec![1u32, 100, 10000, 1000000];
+/// let encoded = StreamVByte::encode(&data);
+///
+/// assert_eq!(encoded.len(), 4);
+/// assert!(!encoded.is_empty());
+///
+/// let decoded = encoded.decode();
+/// assert_eq!(decoded, data);
+/// ```
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, MemSize, MemDbg)]
 pub struct StreamVByte<T: SVBEncodable> {
     control_bytes: Box<[u8]>,
@@ -145,6 +343,33 @@ pub struct StreamVByte<T: SVBEncodable> {
 }
 
 impl<T: SVBEncodable + Default> StreamVByte<T> {
+    /// Encodes a slice of values using Stream VByte compression.
+    ///
+    /// This method compresses the input by encoding each value with the minimum
+    /// number of bytes needed. Values are processed in chunks of T::N_CONTROL.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The slice of values to encode
+    ///
+    /// # Returns
+    ///
+    /// A new `StreamVByte` instance containing the compressed data.
+    ///
+    /// # Padding
+    ///
+    /// The encoded data includes padding (3 control bytes + 15 data bytes) to
+    /// support SIMD decoding operations that process 16 values at a time.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use toolkit::stream_vbyte::StreamVByte;
+    ///
+    /// let data = vec![1u32, 2, 3, 4, 5];
+    /// let encoded = StreamVByte::encode(&data);
+    /// assert_eq!(encoded.len(), 5);
+    /// ```
     pub fn encode(data: &[T]) -> Self {
         if data.is_empty() {
             return Self::default();
@@ -175,6 +400,30 @@ impl<T: SVBEncodable + Default> StreamVByte<T> {
         }
     }
 
+    /// Decodes the compressed data back to the original sequence.
+    ///
+    /// This method fully decompresses the Stream VByte encoded data and returns
+    /// a vector containing all original values.
+    ///
+    /// # Returns
+    ///
+    /// A vector containing the decoded values.
+    ///
+    /// # Performance
+    ///
+    /// Uses SIMD-optimized decoding where available for better performance.
+    /// For partial access, consider using `iter()` or `StreamVByteRandomAccess`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use toolkit::stream_vbyte::StreamVByte;
+    ///
+    /// let original = vec![1u32, 100, 10000];
+    /// let encoded = StreamVByte::encode(&original);
+    /// let decoded = encoded.decode();
+    /// assert_eq!(decoded, original);
+    /// ```
     pub fn decode(&self) -> Vec<T> {
         if self.size == 0 {
             return Vec::new();
@@ -204,26 +453,112 @@ impl<T: SVBEncodable + Default> StreamVByte<T> {
         output
     }
 
-    /// TODO: Make it faster with table lookup
+    /// Returns the total byte length for values encoded in a control byte.
+    ///
+    /// Each control byte encodes information for multiple values. This method
+    /// calculates the total number of data bytes used by those values.
+    ///
+    /// # Arguments
+    ///
+    /// * `control_byte` - The control byte to analyze
+    ///
+    /// # Returns
+    ///
+    /// The total number of bytes in the data section for this control byte.
+    ///
+    /// # TODO
+    ///
+    /// Make it faster with table lookup.
     pub fn control_byte_length(control_byte: u8) -> usize {
         T::LENGTHS[control_byte as usize] as usize
     }
 
+    /// Returns the number of values in the compressed sequence.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use toolkit::stream_vbyte::StreamVByte;
+    ///
+    /// let data = vec![1u32, 2, 3, 4, 5];
+    /// let encoded = StreamVByte::encode(&data);
+    /// assert_eq!(encoded.len(), 5);
+    /// ```
     pub fn len(&self) -> usize {
         self.size
     }
 
+    /// Returns `true` if the sequence contains no values.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use toolkit::stream_vbyte::StreamVByte;
+    ///
+    /// let empty: Vec<u32> = vec![];
+    /// let encoded = StreamVByte::encode(&empty);
+    /// assert!(encoded.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.size == 0
     }
 
+    /// Returns an iterator over the compressed values.
+    ///
+    /// The iterator decodes values lazily in batches of 16 for efficiency.
+    /// This is more memory-efficient than `decode()` for large sequences
+    /// when you don't need all values at once.
+    ///
+    /// # Returns
+    ///
+    /// A `StreamVByteIter` that yields decoded values one at a time.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use toolkit::stream_vbyte::StreamVByte;
+    ///
+    /// let data = vec![1u32, 2, 3, 4, 5];
+    /// let encoded = StreamVByte::encode(&data);
+    ///
+    /// let sum: u32 = encoded.iter().sum();
+    /// assert_eq!(sum, 15);
+    /// ```
     pub fn iter(&self) -> StreamVByteIter<'_, T> {
         StreamVByteIter::new(&self.control_bytes, &self.data, self.size)
     }
 }
 
-/// Iterator for StreamVByte that decodes 4 values at a time and keeps them in a buffer.
+/// Buffer size for batch decoding in the iterator (must match SIMD width).
 const BUFFER_SIZE: usize = 16;
+
+/// Iterator for Stream VByte encoded sequences.
+///
+/// This iterator decodes values lazily in batches of 16 (BUFFER_SIZE) for efficiency.
+/// It maintains an internal buffer and decodes multiple values at once using optimized
+/// SIMD operations when available.
+///
+/// # Type Parameters
+///
+/// * `T` - The unsigned integer type being decoded (must implement `SVBEncodable`)
+///
+/// # Performance
+///
+/// The iterator processes values in batches of 16, which aligns with SIMD operations
+/// for better performance. Individual values are then yielded from the buffer one at a time.
+///
+/// # Examples
+///
+/// ```rust
+/// use toolkit::stream_vbyte::StreamVByte;
+///
+/// let data = vec![1u32, 2, 3, 4, 5];
+/// let encoded = StreamVByte::encode(&data);
+///
+/// for (i, value) in encoded.iter().enumerate() {
+///     assert_eq!(value, data[i]);
+/// }
+/// ```
 pub struct StreamVByteIter<'a, T: SVBEncodable> {
     control_bytes: &'a [u8],
     data: &'a [u8],
@@ -236,7 +571,17 @@ pub struct StreamVByteIter<'a, T: SVBEncodable> {
 }
 
 impl<'a, T: SVBEncodable + Default> StreamVByteIter<'a, T> {
-    /// Creates a new iterator for the given `StreamVByte`.
+    /// Creates a new iterator for Stream VByte encoded data.
+    ///
+    /// # Arguments
+    ///
+    /// * `control_bytes` - Slice of control bytes from the encoded data
+    /// * `data` - Slice of compressed data bytes
+    /// * `size` - Total number of values in the sequence
+    ///
+    /// # Returns
+    ///
+    /// A new iterator positioned at the start of the sequence.
     fn new(control_bytes: &'a [u8], data: &'a [u8], size: usize) -> Self {
         Self {
             control_bytes,
@@ -250,7 +595,16 @@ impl<'a, T: SVBEncodable + Default> StreamVByteIter<'a, T> {
         }
     }
 
-    /// Fills the buffer with up to BUFFER_SIZE decoded values.
+    /// Fills the internal buffer with up to BUFFER_SIZE decoded values.
+    ///
+    /// This method decodes a batch of 16 values at once using optimized decoding
+    /// routines. It's called automatically by the iterator when the buffer is empty.
+    ///
+    /// # Implementation Details
+    ///
+    /// - Uses unsafe code for performance (bounds checks are elided)
+    /// - Decodes exactly 16 values per call (padding ensures this is safe)
+    /// - Updates control_index and data_index to track position in encoded data
     fn fill_buffer(&mut self) {
         if self.position >= self.size {
             return;
