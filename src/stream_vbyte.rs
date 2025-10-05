@@ -193,12 +193,9 @@ impl<T: SVBEncodable + Default> StreamVByteRandomAccess<T> {
             .sum::<usize>();
 
         // skip the remaining values (less than 4)
-
-        for i in 0..to_skip {
-            offset_in_data += (((self.svb.control_bytes[control_bytes_index]
-                >> ((8 - T::CONTROL_BITS) - i * T::CONTROL_BITS))
-                & T::CONTROL_MASK)
-                + 1) as usize;
+        if to_skip > 0 {
+            let mod_control_byte = (self.svb.control_bytes[control_bytes_index] >> ((T::N_CONTROL - to_skip) * T::CONTROL_BITS)); // not their correct position but ok for sum
+            offset_in_data += T::LENGTHS[mod_control_byte as usize] as usize - (T::N_CONTROL - to_skip);
         }
 
         offset_in_data
