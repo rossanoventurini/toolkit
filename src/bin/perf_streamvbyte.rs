@@ -1,3 +1,4 @@
+use mem_dbg::*;
 use std::time::Instant;
 use toolkit::stream_vbyte::{StreamVByte, StreamVByteRandomAccess};
 
@@ -105,6 +106,11 @@ fn benchmark_random_access(data: &[u32]) {
         );
     }
 
+    println!(
+        "    Memory usage (bytes): {}",
+        svb_ra.mem_size(SizeFlags::default())
+    );
+
     let verification_time = verification_start.elapsed();
     println!("    Verification completed in {:?}", verification_time);
 
@@ -121,6 +127,8 @@ fn benchmark_random_access(data: &[u32]) {
     println!("      Elements rate: {:.2} M int/s", elements_per_second);
     println!("      Avg time per query: {:.3} μs", avg_query_time_us);
     println!("    ✓ Random access correctness verified");
+
+    let _ = svb_ra.mem_dbg(DbgFlags::default());
 }
 
 fn benchmark_random_access_u16(data: &[u16]) {
@@ -217,6 +225,8 @@ fn benchmark_random_access_u16(data: &[u16]) {
     println!("      Elements rate: {:.2} M int/s", elements_per_second);
     println!("      Avg time per query: {:.3} μs", avg_query_time_us);
     println!("    ✓ Random access correctness verified");
+
+    let _ = svb_ra.mem_dbg(DbgFlags::default());
 }
 
 fn benchmark_streamvbyte() {
