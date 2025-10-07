@@ -76,7 +76,7 @@ pub mod utils;
 ///
 /// # Type Parameters
 ///
-/// * `T` - The unsigned integer type being encoded (must implement `SVBEncodable`). 
+/// * `T` - The unsigned integer type being encoded (must implement `SVBEncodable`).
 /// Currently supports `u32` and `u16`.
 ///
 /// # Fields

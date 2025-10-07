@@ -23,6 +23,7 @@ pub use stream_vbyte::StreamVByteRandomAccess;
 
 pub mod stream_nibble;
 pub use stream_nibble::StreamNibble;
+pub use stream_nibble::StreamNibbleRandomAccess;
 
 pub mod gen_sequences;
 
