@@ -18,9 +18,11 @@ pub use elias_fano::EliasFanoBuilder;
 
 pub mod stream_vbyte;
 pub use stream_vbyte::StreamVByte;
-
 pub use stream_vbyte::StreamVByteIter;
 pub use stream_vbyte::StreamVByteRandomAccess;
+
+pub mod stream_nibble;
+pub use stream_nibble::StreamNibble;
 
 pub mod gen_sequences;
 
