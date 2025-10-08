@@ -175,31 +175,28 @@ impl<T: SVBEncodable + Default> StreamVByteRandomAccess<T> {
     /// - Uses block offsets to quickly jump to the relevant block
     /// - Processes complete control bytes efficiently
     /// - Handles remaining values (< N_CONTROL) bit by bit
-    pub fn skip(&self, range: std::ops::Range<usize>) -> usize {
+   pub fn skip(&self, range: std::ops::Range<usize>) -> usize {
         let mut to_skip = range.end - range.start;
 
         let block_id = range.start / self.block_size;
-        let mut offset_in_data = self.offsets[block_id];
         let mut control_bytes_index = range.start / T::N_CONTROL;
 
         // skip till a multiple of 4 using only control bytes
+        let mut offset_in_data = self.offsets[block_id];
         offset_in_data += self.svb.control_bytes
             [control_bytes_index..control_bytes_index + (to_skip / T::N_CONTROL)]
             .iter()
             .map(|&control_byte| {
-                control_bytes_index += 1;
-                to_skip -= T::N_CONTROL;
                 T::LENGTHS[control_byte as usize] as usize
             })
             .sum::<usize>();
 
-        // skip the remaining values (less than 4)
-
-        for i in 0..to_skip {
-            offset_in_data += (((self.svb.control_bytes[control_bytes_index]
-                >> ((8 - T::CONTROL_BITS) - i * T::CONTROL_BITS))
-                & T::CONTROL_MASK)
-                + 1) as usize;
+        // skip the remaining values (less than T::N_CONTROL)
+        control_bytes_index += to_skip / T::N_CONTROL;
+        to_skip %= T::N_CONTROL;        
+        if to_skip > 0 {
+            let mod_control_byte = (self.svb.control_bytes[control_bytes_index] >> ((T::N_CONTROL - to_skip) * T::CONTROL_BITS)); // not their correct position but ok for sum
+            offset_in_data += T::LENGTHS[mod_control_byte as usize] as usize - (T::N_CONTROL - to_skip);
         }
 
         offset_in_data
