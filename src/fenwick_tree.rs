@@ -77,7 +77,6 @@ use std::iter::FusedIterator;
 /// | 10,000,000     | 49 ns                   | 59 ns                    | 42 ns                | 38 ns                 |
 /// | 1,000,000,000  | 133 ns                  | 174 ns                   | 92 ns                | 105 ns                |
 ///
-/// The Θ(log n) complexity is evident: operation time grows logarithmically with tree size.
 /// HOLES=true provides better performance for very large datasets due to improved cache locality.
 ///
 /// ## Iterator Performance
