@@ -22,6 +22,9 @@ pub use stream_vbyte::StreamVByte;
 pub use stream_vbyte::StreamVByteIter;
 pub use stream_vbyte::StreamVByteRandomAccess;
 
+pub mod fenwick_tree;
+pub use fenwick_tree::FenwickTree;
+
 pub mod gen_sequences;
 
 pub mod algorithms;

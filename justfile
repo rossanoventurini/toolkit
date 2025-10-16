@@ -13,3 +13,7 @@ perf_ef:
 perf_vb:
     RUSTFLAGS='-C target-cpu=native' cargo build --release
     ./target/release/perf_streamvbyte
+
+perf_fenwick_tree:
+    RUSTFLAGS='-C target-cpu=native' cargo build --release
+    ./target/release/perf_fenwick_tree -n 10000000 --iter --update --sum
