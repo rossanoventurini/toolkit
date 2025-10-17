@@ -138,6 +138,122 @@ where
         }
     }
 
+    /// Gets the value at index `i`.
+    ///
+    /// This operation retrieves the element value in Θ(log n) time by computing
+    /// the difference between consecutive prefix sums.
+    ///
+    /// # Arguments
+    ///
+    /// * `i` - The index to query (0-based)
+    ///
+    /// # Returns
+    ///
+    /// The value at index `i`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= n`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toolkit::FenwickTree;
+    ///
+    /// let ft = FenwickTree::<i32, false>::from(vec![10, 20, 30]);
+    /// assert_eq!(ft.get_at(1), 20);
+    /// ```
+    #[inline(always)]
+    pub fn get_at(&self, i: usize) -> T {
+        assert!(i < self.n);
+        
+        if i == 0 {
+            self.sum(0..=0)
+        } else {
+            let mut result = self.sum(0..=i);
+            result -= self.sum(0..i);
+            result
+        }
+    }
+
+    /// Sets the element at index `i` to the given value.
+    ///
+    /// This operation updates the tree structure in Θ(log n) time. It first retrieves
+    /// the current value, computes the difference, and applies the delta.
+    ///
+    /// # Arguments
+    ///
+    /// * `i` - The index to update (0-based)
+    /// * `v` - The new value to set
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= n`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toolkit::FenwickTree;
+    ///
+    /// let mut ft = FenwickTree::<i32, false>::from(vec![10, 20, 30]);
+    /// ft.set_at(1, 25);
+    /// assert_eq!(ft.get_at(1), 25);
+    /// assert_eq!(ft.sum(..), 65); // 10 + 25 + 30
+    /// ```
+    #[inline(always)]
+    pub fn set_at(&mut self, i: usize, v: T) {
+        assert!(i < self.n);
+        
+        let current = self.get_at(i);
+        let mut delta = v;
+        delta -= current;
+        
+        let mut idx = i;
+        while idx < self.n {
+            let pos = if HOLES { Self::index(idx) } else { idx };
+            self.tree[pos] += delta;
+            idx = Self::next(idx);
+        }
+    }
+
+    /// Adds a value to the element at index `i`.
+    ///
+    /// This operation updates the tree structure in Θ(log n) time.
+    ///
+    /// # Arguments
+    ///
+    /// * `i` - The index to update (0-based)
+    /// * `v` - The value to add
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= n`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toolkit::FenwickTree;
+    ///
+    /// let mut ft = FenwickTree::<i32, false>::from(vec![1, 2, 3, 4, 5]);
+    /// ft.add_at(2, 10);
+    /// assert_eq!(ft.sum(0..=2), 16); // 1 + 2 + (3 + 10)
+    ///
+    /// // Iterate to see the updated values
+    /// let elements: Vec<i32> = ft.iter().collect();
+    /// assert_eq!(elements, vec![1, 2, 13, 4, 5]);
+    /// ```
+    #[inline(always)]
+    pub fn add_at(&mut self, i: usize, v: T) {
+        assert!(i < self.n);
+
+        let mut idx = i;
+        while idx < self.n {
+            let pos = if HOLES { Self::index(idx) } else { idx };
+            self.tree[pos] += v;
+            idx = Self::next(idx);
+        }
+    }
+
     /// Subtracts a value from the element at index `i`.
     ///
     /// This operation updates the tree structure in Θ(log n) time.
@@ -162,14 +278,13 @@ where
     /// ```
     #[inline(always)]
     pub fn sub_at(&mut self, i: usize, v: T) {
-
         assert!(i < self.n);
 
-        let mut i = i;
-        while i < self.n {
-            let pos = if HOLES { Self::index(i) } else { i };
+        let mut idx = i;
+        while idx < self.n {
+            let pos = if HOLES { Self::index(idx) } else { idx };
             self.tree[pos] -= v;
-            i = Self::next(i);
+            idx = Self::next(idx);
         }
     }
 
@@ -288,44 +403,6 @@ where
         }
 
         sum
-    }
-
-    /// Adds a value to the element at index `i`.
-    ///
-    /// This operation updates the tree structure in Θ(log n) time.
-    ///
-    /// # Arguments
-    ///
-    /// * `i` - The index to update (0-based)
-    /// * `v` - The value to add
-    ///
-    /// # Panics
-    ///
-    /// Panics if `i >= n`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use toolkit::FenwickTree;
-    ///
-    /// let mut ft = FenwickTree::<i32, false>::from(vec![1, 2, 3, 4, 5]);
-    /// ft.add_at(2, 10);
-    /// assert_eq!(ft.sum(0..=2), 16); // 1 + 2 + (3 + 10)
-    ///
-    /// // Iterate to see the updated values
-    /// let elements: Vec<i32> = ft.iter().collect();
-    /// assert_eq!(elements, vec![1, 2, 13, 4, 5]);
-    /// ```
-    #[inline(always)]
-    pub fn add_at(&mut self, i: usize, v: T) {
-        assert!(i < self.n);
-
-        let mut i = i;
-        while i < self.n {
-            let pos = if HOLES { Self::index(i) } else { i };
-            self.tree[pos] += v;
-            i = Self::next(i);
-        }
     }
 
     /// Returns the number of elements in the Fenwick tree.
@@ -1185,5 +1262,79 @@ mod tests {
         let prefix_sums: Vec<i32> = ft.prefix_sums().collect();
         // [1, 2, 13, 4, 5] -> prefix sums: [1, 3, 16, 20, 25]
         assert_eq!(prefix_sums, vec![1, 3, 16, 20, 25]);
+    }
+
+    #[test]
+    fn test_fenwick_get_at() {
+        // Test get_at method
+        let ft: FenwickTree<i32, false> = vec![10, 20, 30, 40, 50].into_iter().collect();
+        
+        assert_eq!(ft.get_at(0), 10);
+        assert_eq!(ft.get_at(1), 20);
+        assert_eq!(ft.get_at(2), 30);
+        assert_eq!(ft.get_at(3), 40);
+        assert_eq!(ft.get_at(4), 50);
+    }
+
+    #[test]
+    fn test_fenwick_set_at() {
+        // Test set_at method
+        let mut ft: FenwickTree<i32, false> = vec![10, 20, 30, 40, 50].into_iter().collect();
+        
+        ft.set_at(1, 25);
+        assert_eq!(ft.get_at(1), 25);
+        assert_eq!(ft.sum(..), 155); // 10 + 25 + 30 + 40 + 50
+        
+        ft.set_at(0, 5);
+        assert_eq!(ft.get_at(0), 5);
+        assert_eq!(ft.sum(..), 150); // 5 + 25 + 30 + 40 + 50
+        
+        ft.set_at(4, 100);
+        assert_eq!(ft.get_at(4), 100);
+        assert_eq!(ft.sum(..), 200); // 5 + 25 + 30 + 40 + 100
+    }
+
+    #[test]
+    fn test_fenwick_set_at_with_iterations() {
+        // Test set_at reflects in iterations
+        let mut ft: FenwickTree<i32, false> = vec![1, 2, 3, 4, 5].into_iter().collect();
+        
+        ft.set_at(2, 10);
+        assert_eq!(ft.get_at(2), 10);
+        
+        let elements: Vec<i32> = ft.iter().collect();
+        assert_eq!(elements, vec![1, 2, 10, 4, 5]);
+    }
+
+    #[test]
+    fn test_fenwick_get_after_add_sub() {
+        // Test get_at works correctly after add_at and sub_at
+        let mut ft: FenwickTree<i32, false> = vec![10, 20, 30].into_iter().collect();
+        
+        ft.add_at(1, 5);
+        assert_eq!(ft.get_at(1), 25);
+        
+        ft.sub_at(1, 10);
+        assert_eq!(ft.get_at(1), 15);
+    }
+
+    #[test]
+    fn test_fenwick_set_at_zero() {
+        // Test set_at with zero value
+        let mut ft: FenwickTree<i32, false> = vec![10, 20, 30].into_iter().collect();
+        
+        ft.set_at(1, 0);
+        assert_eq!(ft.get_at(1), 0);
+        assert_eq!(ft.sum(..), 40); // 10 + 0 + 30
+    }
+
+    #[test]
+    fn test_fenwick_set_at_negative() {
+        // Test set_at with negative values
+        let mut ft: FenwickTree<i32, false> = vec![10, 20, 30].into_iter().collect();
+        
+        ft.set_at(1, -5);
+        assert_eq!(ft.get_at(1), -5);
+        assert_eq!(ft.sum(..), 35); // 10 + (-5) + 30
     }
 }
