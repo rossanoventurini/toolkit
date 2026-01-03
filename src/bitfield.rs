@@ -258,24 +258,38 @@ impl<D: AsRef<[u64]>, V: AsRef<[u64]> + Default + From<Vec<u64>>> From<D> for Bi
     }
 }
 
-impl<V> BitField<V>
-where
-    V: AsRef<[u64]>,
-{
-    /// Converts the `BitField` into a new `BitField` with a different data type.
-    ///
-    /// We do not implement `From<BitField<S>> for BitField<D>` because it would conflict with the blanket
-    ///  implementation `impl<T> From<T> for T>` provided by the standard library when `V == D`.
-    ///  Instead, we expose a `convert_into` method to handle the conversion explicitly without ambiguity.
-    pub fn convert_into<D>(&self) -> BitField<D>
-    where
-        D: AsRef<[u64]> + From<Vec<u64>>,
-    {
-        BitField::<D> {
-            bitvector: self.bitvector.convert_into(),
-            field_width: self.field_width,
-            mask: self.mask,
-            length: self.length,
+impl From<BitFieldVec> for BitFieldBoxed {
+    fn from(bitfield: BitFieldVec) -> Self {
+        let BitField {
+            bitvector,
+            field_width,
+            mask,
+            length,
+        } = bitfield;
+
+        Self {
+            bitvector: bitvector.convert_into(),
+            field_width,
+            mask,
+            length,
+        }
+    }
+}
+
+impl From<BitFieldBoxed> for BitFieldVec {
+    fn from(bitfield: BitFieldBoxed) -> Self {
+        let BitField {
+            bitvector,
+            field_width,
+            mask,
+            length,
+        } = bitfield;
+
+        Self {
+            bitvector: bitvector.convert_into(),
+            field_width,
+            mask,
+            length,
         }
     }
 }

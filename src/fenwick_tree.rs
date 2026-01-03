@@ -436,48 +436,6 @@ where
         self.n == 0
     }
 
-    /// Constructs a Fenwick tree from a vector of values.
-    ///
-    /// This is more efficient than creating an empty tree and calling `add_at`
-    /// repeatedly, as it builds the tree structure in Θ(n) time.
-    ///
-    /// # Arguments
-    ///
-    /// * `v` - A vector of initial values
-    ///
-    /// # Returns
-    ///
-    /// A Fenwick tree containing the elements from the vector.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use toolkit::FenwickTree;
-    ///
-    /// let ft = FenwickTree::<i32, false>::from(vec![1, 2, 3, 4, 5]);
-    /// assert_eq!(ft.len(), 5);
-    /// assert_eq!(ft.sum(0..5), 15);
-    /// ```
-    pub fn from(mut v: Vec<T>) -> Self {
-        let n = v.len();
-
-        if HOLES {
-            v.resize(Self::index(n), T::zero());
-        }
-
-        for i in 0..n {
-            let parent = Self::next(i);
-            if parent < n {
-                let child = v[i];
-                v[parent] += child;
-            }
-        }
-
-        FenwickTree {
-            tree: v.into_boxed_slice(),
-            n,
-        }
-    }
 }
 
 /// Iterator over the original elements of a Fenwick tree.
@@ -777,6 +735,54 @@ where
 {
     fn from(v: &[T]) -> Self {
         FenwickTree::from(v.to_vec())
+    }
+}
+
+impl<T, const HOLES: bool> From<Vec<T>> for FenwickTree<T, HOLES>
+where
+    T: Copy + Zero + AddAssign + SubAssign,
+{
+    /// Constructs a Fenwick tree from a vector of values.
+    ///
+    /// This is more efficient than creating an empty tree and calling `add_at`
+    /// repeatedly, as it builds the tree structure in Θ(n) time.
+    ///
+    /// # Arguments
+    ///
+    /// * `v` - A vector of initial values
+    ///
+    /// # Returns
+    ///
+    /// A Fenwick tree containing the elements from the vector.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toolkit::FenwickTree;
+    ///
+    /// let ft = FenwickTree::<i32, false>::from(vec![1, 2, 3, 4, 5]);
+    /// assert_eq!(ft.len(), 5);
+    /// assert_eq!(ft.sum(0..5), 15);
+    /// ```
+    fn from(mut v: Vec<T>) -> Self {
+        let n = v.len();
+
+        if HOLES {
+            v.resize(Self::index(n), T::zero());
+        }
+
+        for i in 0..n {
+            let parent = Self::next(i);
+            if parent < n {
+                let child = v[i];
+                v[parent] += child;
+            }
+        }
+
+        FenwickTree {
+            tree: v.into_boxed_slice(),
+            n,
+        }
     }
 }
 

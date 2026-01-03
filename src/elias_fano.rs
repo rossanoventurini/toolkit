@@ -285,7 +285,7 @@ impl EliasFanoBuilder {
     pub fn build(self) -> EliasFano {
         EliasFano {
             high_bits: DArray::new(&self.high_bits),
-            low_bits: self.low_bits.convert_into(),
+            low_bits: self.low_bits.into(),
             num_vals: self.num_vals,
             low_len: self.low_len,
             universe: self.universe,
