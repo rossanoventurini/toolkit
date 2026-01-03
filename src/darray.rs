@@ -60,8 +60,8 @@
 //! The const generic BITS in this struct allows us to build and store these vectors to support
 //! `select0` as well.
 
-use crate::BitBoxed;
-use crate::bitvector::{BitVector, BitVectorBitPositionsIter, BitVectorIter};
+use crate::BitVector;
+use crate::bitvector::{BitVectorGeneric, BitVectorBitPositionsIter, BitVectorIter};
 use crate::utils::select_in_word;
 use crate::{AccessBin, SelectBin};
 
@@ -80,7 +80,7 @@ const MAX_IN_BLOCK_DISTACE: usize = 1 << 16;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, MemSize, MemDbg)]
 pub struct DArray<const SELECT0_SUPPORT: bool = false> {
-    bv: BitBoxed,
+    bv: BitVector,
     ones_inventories: Inventories<true>,
     zeroes_inventories: Option<Inventories<false>>,
 }
@@ -99,7 +99,7 @@ struct Inventories<const BIT: bool> {
 /// Const generic BIT specifies if we are computing statistics
 /// for zeroes (BIT=false) or for ones (BIT=true).
 impl<const BIT: bool> Inventories<BIT> {
-    pub fn new<V: AsRef<[u64]>>(bv: &BitVector<V>) -> Self {
+    pub fn new<V: AsRef<[u64]>>(bv: &BitVectorGeneric<V>) -> Self {
         let mut block_inventory = Vec::new();
         let mut subblock_inventory = Vec::new();
         let mut overflow_positions = Vec::new();
@@ -184,7 +184,7 @@ impl<const BIT: bool> Inventories<BIT> {
 
 /// Const genetic SELECT0_SUPPORT
 impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
-    /// Creates a [`DArray`] from a [`BitVector`].
+    /// Creates a [`DArray`] from a [`BitVectorGeneric`].
     ///
     /// # Examples
     ///
@@ -198,7 +198,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// assert_eq!(da.select0(0), Some(1));
     /// ```
     #[must_use]
-    pub fn new<V: AsRef<[u64]>>(bv: &BitVector<V>) -> Self {
+    pub fn new<V: AsRef<[u64]>>(bv: &BitVectorGeneric<V>) -> Self {
         let ones_inventories = Inventories::new(bv);
 
         let zeroes_inventories = if SELECT0_SUPPORT {
@@ -208,7 +208,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
         };
 
         DArray {
-            bv: bv.convert_into(),
+            bv: bv.into(),
             ones_inventories,
             zeroes_inventories,
         }
@@ -302,7 +302,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// assert_eq!(iter.next(), Some(true)); // Sixth bit is true
     /// assert_eq!(iter.next(), None); // End of the iterator
     /// ```
-    pub fn iter(&self) -> BitVectorIter<Box<[u64]>, &BitBoxed> {
+    pub fn iter(&self) -> BitVectorIter<Box<[u64]>, &BitVector> {
         self.bv.iter()
     }
 
@@ -576,7 +576,7 @@ impl<const SELECT0_SUPPORT: bool> FromIterator<bool> for DArray<SELECT0_SUPPORT>
     where
         T: IntoIterator<Item = bool>,
     {
-        let bv: BitVector<Box<[u64]>> = BitVector::from_iter(iter);
+        let bv: BitVectorGeneric<Box<[u64]>> = BitVectorGeneric::from_iter(iter);
         DArray::<SELECT0_SUPPORT>::new(&bv)
     }
 }
@@ -612,7 +612,7 @@ where
             data.windows(2).all(|w| w[0] < w[1]),
             "Sequence must be strictly increasing"
         );
-        let bv: BitVector<Box<[u64]>> = BitVector::from_iter(data);
+        let bv: BitVectorGeneric<Box<[u64]>> = BitVectorGeneric::from_iter(data);
         DArray::<SELECT0_SUPPORT>::new(&bv)
     }
 }
@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_select1() {
-        let bv: BitVector<Box<[u64]>> = BitVector::default();
+        let bv: BitVectorGeneric<Box<[u64]>> = BitVectorGeneric::default();
         let v: Vec<usize> = bv.ones().collect();
         assert!(v.is_empty());
 
@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn test_select0() {
-        let bv: BitVector<Box<[u64]>> = BitVector::default();
+        let bv: BitVectorGeneric<Box<[u64]>> = BitVectorGeneric::default();
         let v: Vec<usize> = bv.ones().collect();
         assert!(v.is_empty());
 

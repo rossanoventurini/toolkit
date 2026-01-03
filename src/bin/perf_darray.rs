@@ -1,6 +1,6 @@
 use toolkit::gen_sequences::{gen_queries, gen_strictly_increasing_sequence};
 use toolkit::utils::{TimingQueries, type_of};
-use toolkit::{BitBoxed, DArray, SelectBin};
+use toolkit::{BitVector, DArray, SelectBin};
 
 use mem_dbg::*;
 
@@ -15,7 +15,7 @@ fn main() {
         let seq = gen_strictly_increasing_sequence(n, u);
         let queries = gen_queries(n_queries, n);
 
-        let ds: DArray<false> = DArray::new(&seq.iter().copied().collect::<BitBoxed>());
+        let ds: DArray<false> = DArray::new(&seq.iter().copied().collect::<BitVector>());
         let mut res = 0;
 
         let mut t = TimingQueries::new(n_runs, n_queries);

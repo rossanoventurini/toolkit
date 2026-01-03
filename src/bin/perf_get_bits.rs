@@ -9,7 +9,7 @@ fn main() {
     let n_bits = 1026;
     let v = gen_strictly_increasing_sequence(n_bits / 2, n_bits);
 
-    let bv = toolkit::bitvector::BitVec::from_iter(v);
+    let bv = toolkit::bitvector::BitVectorGrowable::from_iter(v);
 
     let _ = bv.mem_dbg(DbgFlags::empty());
 

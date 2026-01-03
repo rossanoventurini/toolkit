@@ -1,16 +1,16 @@
-use crate::BitVec;
-use crate::bitvector::{BitBoxed, BitVector};
+use crate::BitVectorGrowable;
+use crate::bitvector::BitVectorGeneric;
 use crate::utils::compute_mask;
 
 use mem_dbg::*;
 use serde::{Deserialize, Serialize};
 
 /// A resizable, growable, and mutable bit field vector.
-pub type BitFieldVec = BitField<Vec<u64>>;
+pub type BitFieldGrowable = BitFieldGeneric<Vec<u64>>;
 /// Bit operations on a slice of u64, immutable or mutable but not growable bit field field vector.
-pub type BitFieldSlice<'a> = BitField<&'a [u64]>;
+pub type BitFieldSlice<'a> = BitFieldGeneric<&'a [u64]>;
 /// Bit operations on a boxed slice of u64, immutable or mutable but not growable bit field vector.
-pub type BitFieldBoxed = BitField<Box<[u64]>>;
+pub type BitField = BitFieldGeneric<Box<[u64]>>;
 
 /// A bit field structure that stores values using a fixed number of bits per value.
 /// This is useful for storing sequences of integers that can be represented with
@@ -20,9 +20,9 @@ pub type BitFieldBoxed = BitField<Box<[u64]>>;
 /// TODO: add methods to modify bits or append new values, an many more.
 /// TODO: add iterators for iterating over the values
 #[derive(Debug, Default, Clone, Serialize, Deserialize, Eq, PartialEq, MemSize, MemDbg)]
-pub struct BitField<V: AsRef<[u64]>> {
+pub struct BitFieldGeneric<V: AsRef<[u64]>> {
     /// The underlying bit vector storing the packed values
-    bitvector: BitVector<V>,
+    bitvector: BitVectorGeneric<V>,
     /// Number of bits used to represent each value (0-64)
     field_width: u8,
     /// Mask with the last field_width bits set to 1, used for extracting values
@@ -31,8 +31,8 @@ pub struct BitField<V: AsRef<[u64]>> {
     length: usize,
 }
 
-impl<V: AsRef<[u64]> + Default> BitField<V> {
-    /// Creates a new BitField with the specified number of bits per value.
+impl<V: AsRef<[u64]> + Default> BitFieldGeneric<V> {
+    /// Creates a new BitFieldGeneric with the specified number of bits per value.
     ///
     /// # Arguments
     /// * `field_width` - Number of bits per value (must be between 0 and 64)
@@ -42,9 +42,9 @@ impl<V: AsRef<[u64]> + Default> BitField<V> {
     ///
     /// # Examples
     /// ```
-    /// use toolkit::BitFieldVec;
+    /// use toolkit::BitFieldGrowable;
     ///
-    /// let bf = BitFieldVec::new(8); // 8 bits per value
+    /// let bf = BitFieldGrowable::new(8); // 8 bits per value
     /// assert_eq!(bf.field_width(), 8);
     /// assert_eq!(bf.len(), 0);
     /// ```
@@ -54,7 +54,7 @@ impl<V: AsRef<[u64]> + Default> BitField<V> {
         let mask = compute_mask(field_width as usize);
 
         Self {
-            bitvector: BitVector::<V>::default(),
+            bitvector: BitVectorGeneric::<V>::default(),
             field_width,
             mask,
             length: 0,
@@ -91,9 +91,9 @@ impl<V: AsRef<[u64]> + Default> BitField<V> {
     ///
     /// # Examples
     /// ```
-    /// use toolkit::BitFieldVec;
+    /// use toolkit::BitFieldGrowable;
     ///
-    /// let mut bf = BitFieldVec::new(4); // 4 bits per value
+    /// let mut bf = BitFieldGrowable::new(4); // 4 bits per value
     /// bf.push(1);
     /// bf.push(7);
     /// bf.push(15);
@@ -124,8 +124,8 @@ impl<V: AsRef<[u64]> + Default> BitField<V> {
     }
 }
 
-impl BitField<Vec<u64>> {
-    /// Creates a new BitField with the specified capacity and number of bits per value.
+impl BitFieldGeneric<Vec<u64>> {
+    /// Creates a new BitFieldGeneric with the specified capacity and number of bits per value.
     ///
     /// # Arguments
     /// * `n_vals` - The number of values to reserve space for
@@ -136,9 +136,9 @@ impl BitField<Vec<u64>> {
     ///
     /// # Examples
     /// ```
-    /// use toolkit::BitFieldVec;
+    /// use toolkit::BitFieldGrowable;
     ///
-    /// let bf = BitFieldVec::with_capacity(10, 8); // Reserve space for 10 values, 8 bits each
+    /// let bf = BitFieldGrowable::with_capacity(10, 8); // Reserve space for 10 values, 8 bits each
     /// assert_eq!(bf.field_width(), 8);
     /// assert_eq!(bf.len(), 0);
     /// ```
@@ -148,7 +148,7 @@ impl BitField<Vec<u64>> {
 
         let capacity = n_vals * width as usize;
         Self {
-            bitvector: BitVec::with_capacity(capacity),
+            bitvector: BitVectorGrowable::with_capacity(capacity),
             field_width: width,
             mask: compute_mask(width as usize),
             length: 0,
@@ -165,7 +165,7 @@ impl BitField<Vec<u64>> {
 
             if self.is_empty() {
                 // If this is the first value, initialize the bitvector
-                self.bitvector = BitVec::with_zeros(1);
+                self.bitvector = BitVectorGrowable::with_zeros(1);
             }
 
             self.length += 1;
@@ -182,8 +182,12 @@ impl BitField<Vec<u64>> {
     }
 }
 
-impl<D: AsRef<[u64]>, V: AsRef<[u64]> + Default + From<Vec<u64>>> From<D> for BitField<V> {
-    /// Creates a BitField from a slice of u64 values.
+impl<D, V> From<D> for BitFieldGeneric<V>
+where
+    D: AsRef<[u64]>,
+    V: AsRef<[u64]> + AsMut<[u64]> + Default + From<Vec<u64>>,
+{
+    /// Creates a BitFieldGeneric from a slice of u64 values.
     ///
     /// This implementation calculates the minimum number of bits required to store
     /// the largest value in the input data, then packs all values using that
@@ -193,14 +197,14 @@ impl<D: AsRef<[u64]>, V: AsRef<[u64]> + Default + From<Vec<u64>>> From<D> for Bi
     /// * `data` - A reference to a slice of u64 values
     ///
     /// # Returns
-    /// A BitField containing all the values from the input data.
+    /// A BitFieldGeneric containing all the values from the input data.
     ///
     /// # Examples
     /// ```
-    /// use toolkit::BitFieldBoxed;
+    /// use toolkit::BitField;
     ///
     /// let data = vec![1, 7, 15, 3];
-    /// let bf = BitFieldBoxed::from(data);
+    /// let bf = BitField::from(data);
     ///
     /// assert_eq!(bf.field_width(), 4); // 15 requires 4 bits
     /// assert_eq!(bf.get(0), Some(1));
@@ -231,14 +235,14 @@ impl<D: AsRef<[u64]>, V: AsRef<[u64]> + Default + From<Vec<u64>>> From<D> for Bi
         let mask = compute_mask(field_width as usize);
 
         // For the special case where all values are 0 (field_width = 0),
-        // we create a BitVector with only one bit set to 0
+        // we create a BitVectorGeneric with only one bit set to 0
         let total_bits = if field_width == 0 {
             1 // Use 1 bit for all the values, set to 0
         } else {
             data.len() * field_width as usize
         };
 
-        let mut bitvector = BitBoxed::with_zeros(total_bits);
+        let mut bitvector = BitVectorGeneric::<V>::with_zeros(total_bits);
 
         // Pack the values into the bit vector
         // Special case: if field_width = 0, all values are 0 and the bitvector is already all zeros
@@ -250,7 +254,7 @@ impl<D: AsRef<[u64]>, V: AsRef<[u64]> + Default + From<Vec<u64>>> From<D> for Bi
         }
 
         Self {
-            bitvector: bitvector.convert_into(),
+            bitvector,
             field_width,
             mask,
             length: data.len(),
@@ -258,9 +262,9 @@ impl<D: AsRef<[u64]>, V: AsRef<[u64]> + Default + From<Vec<u64>>> From<D> for Bi
     }
 }
 
-impl From<BitFieldVec> for BitFieldBoxed {
-    fn from(bitfield: BitFieldVec) -> Self {
-        let BitField {
+impl From<BitFieldGrowable> for BitField {
+    fn from(bitfield: BitFieldGrowable) -> Self {
+        let BitFieldGeneric {
             bitvector,
             field_width,
             mask,
@@ -268,7 +272,7 @@ impl From<BitFieldVec> for BitFieldBoxed {
         } = bitfield;
 
         Self {
-            bitvector: bitvector.convert_into(),
+            bitvector: bitvector.into(),
             field_width,
             mask,
             length,
@@ -276,9 +280,20 @@ impl From<BitFieldVec> for BitFieldBoxed {
     }
 }
 
-impl From<BitFieldBoxed> for BitFieldVec {
-    fn from(bitfield: BitFieldBoxed) -> Self {
-        let BitField {
+impl<V: AsRef<[u64]>> From<&BitFieldGeneric<V>> for BitField {
+    fn from(bitfield: &BitFieldGeneric<V>) -> Self {
+        Self {
+            bitvector: (&bitfield.bitvector).into(),
+            field_width: bitfield.field_width,
+            mask: bitfield.mask,
+            length: bitfield.length,
+        }
+    }
+}
+
+impl From<BitField> for BitFieldGrowable {
+    fn from(bitfield: BitField) -> Self {
+        let BitFieldGeneric {
             bitvector,
             field_width,
             mask,
@@ -286,10 +301,21 @@ impl From<BitFieldBoxed> for BitFieldVec {
         } = bitfield;
 
         Self {
-            bitvector: bitvector.convert_into(),
+            bitvector: bitvector.into(),
             field_width,
             mask,
             length,
+        }
+    }
+}
+
+impl<V: AsRef<[u64]>> From<&BitFieldGeneric<V>> for BitFieldGrowable {
+    fn from(bitfield: &BitFieldGeneric<V>) -> Self {
+        Self {
+            bitvector: (&bitfield.bitvector).into(),
+            field_width: bitfield.field_width,
+            mask: bitfield.mask,
+            length: bitfield.length,
         }
     }
 }
@@ -298,7 +324,7 @@ impl From<BitFieldBoxed> for BitFieldVec {
 mod tests {
     #[test]
     fn test_push_basic() {
-        let mut bf = BitFieldVec::new(4);
+        let mut bf = BitFieldGrowable::new(4);
         bf.push(1);
         bf.push(7);
         bf.push(15);
@@ -312,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_push_zero_width() {
-        let mut bf = BitFieldVec::new(0);
+        let mut bf = BitFieldGrowable::new(0);
         bf.push(0);
         bf.push(0);
         assert_eq!(bf.len(), 2);
@@ -323,21 +349,21 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_push_zero_width_nonzero_value() {
-        let mut bf = BitFieldVec::new(0);
+        let mut bf = BitFieldGrowable::new(0);
         bf.push(1); // panic
     }
 
     #[test]
     #[should_panic]
     fn test_push_value_too_large() {
-        let mut bf = BitFieldVec::new(3);
+        let mut bf = BitFieldGrowable::new(3);
         bf.push(8); // 8 non rappresentabile con 3 bit
     }
     use super::*;
 
     #[test]
     fn test_new_bitfield() {
-        let bf = BitFieldVec::new(8);
+        let bf = BitFieldGrowable::new(8);
         assert_eq!(bf.field_width(), 8);
         assert_eq!(bf.mask(), 0xFF);
         assert!(bf.is_empty());
@@ -346,7 +372,7 @@ mod tests {
     #[test]
     fn test_from_empty_data() {
         let data: Vec<u64> = vec![];
-        let bf = BitFieldVec::from(data);
+        let bf = BitFieldGrowable::from(data);
         assert_eq!(bf.field_width(), 1);
         assert!(bf.is_empty());
     }
@@ -354,7 +380,7 @@ mod tests {
     #[test]
     fn test_from_data_with_small_values() {
         let data = vec![1, 7, 15, 3];
-        let bf = BitFieldVec::from(data);
+        let bf = BitFieldGrowable::from(data);
 
         assert_eq!(bf.field_width(), 4); // 15 = 0b1111 requires 4 bits
         assert_eq!(bf.len(), 4);
@@ -367,7 +393,7 @@ mod tests {
     #[test]
     fn test_from_data_with_zero() {
         let data = vec![0, 1, 2];
-        let bf = BitFieldVec::from(data);
+        let bf = BitFieldGrowable::from(data);
 
         assert_eq!(bf.field_width(), 2); // 2 = 0b10 requires 2 bits
         assert_eq!(bf.get(0), Some(0));
@@ -378,7 +404,7 @@ mod tests {
     #[test]
     fn test_from_data_only_zeros() {
         let data = vec![0, 0, 0];
-        let bf = BitFieldVec::from(data);
+        let bf = BitFieldGrowable::from(data);
 
         assert_eq!(bf.field_width(), 0); // 0 requires 0 bits (special case)
         assert_eq!(bf.len(), 3);
@@ -390,7 +416,7 @@ mod tests {
     #[test]
     fn test_from_single_zero() {
         let data = vec![0];
-        let bf = BitFieldVec::from(data);
+        let bf = BitFieldGrowable::from(data);
 
         assert_eq!(bf.field_width(), 0); // Single 0 requires 0 bits
         assert_eq!(bf.len(), 1);
@@ -401,7 +427,7 @@ mod tests {
     #[test]
     fn test_out_of_bounds_access() {
         let data = vec![1, 2, 3];
-        let bf = BitFieldVec::from(data);
+        let bf = BitFieldGrowable::from(data);
 
         assert_eq!(bf.get(3), None);
         assert_eq!(bf.get(100), None);
@@ -411,22 +437,22 @@ mod tests {
     fn test_len_method() {
         // Test with different data sizes
         let data1 = vec![1, 2, 3, 4, 5];
-        let bf1 = BitFieldVec::from(data1);
+        let bf1 = BitFieldGrowable::from(data1);
         assert_eq!(bf1.len(), 5);
 
         let data2 = vec![0, 0, 0, 0];
-        let bf2 = BitFieldVec::from(data2);
+        let bf2 = BitFieldGrowable::from(data2);
         assert_eq!(bf2.len(), 4);
 
-        // Empty BitField
-        let bf3 = BitFieldVec::new(8);
+        // Empty BitFieldGeneric
+        let bf3 = BitFieldGrowable::new(8);
         assert_eq!(bf3.len(), 0);
     }
 
     #[test]
     fn test_new_with_zero_bits() {
         // Now field_width = 0 is allowed for the case where all values are zero
-        let bf = BitFieldVec::new(0);
+        let bf = BitFieldGrowable::new(0);
         assert_eq!(bf.field_width(), 0);
         assert_eq!(bf.mask(), 0);
         assert!(bf.is_empty());
@@ -435,6 +461,6 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_new_with_too_many_bits() {
-        BitFieldVec::new(65);
+        BitFieldGrowable::new(65);
     }
 }

@@ -1,4 +1,4 @@
-//! # BitVector Module
+//! # BitVectorGeneric Module
 //!
 //! This module provides flexible and efficient implementations of mutable, immutable, and growable bit vectors.
 //! It supports single-bit access, appending, slicing with offsets, iteration over set or unset bits,
@@ -6,8 +6,8 @@
 //!
 //! ## Features
 //!
-//! - `BitVec`: A growable and mutable bit vector (`Vec<u64>`-backed).
-//! - `BitBoxed`: A compact, fixed-size version of a bit vector.
+//! - `BitVectorGrowable`: A growable and mutable bit vector (`Vec<u64>`-backed).
+//! - `BitVector`: A compact, fixed-size version of a bit vector.
 //! - `BitSlice`: A read-only view over existing memory.
 //! - Efficient iteration over `1` and `0` bit positions.
 //! - Fast `get_bits` and `set_bits` (up to 64 bits).
@@ -18,9 +18,9 @@
 //! ### Basic usage
 //!
 //! ```rust
-//! use toolkit::{BitVec, AccessBin};
+//! use toolkit::{BitVectorGrowable, AccessBin};
 //!
-//! let mut bv = BitVec::new();
+//! let mut bv = BitVectorGrowable::new();
 //! bv.push(true);
 //! bv.push(false);
 //! bv.push(true);
@@ -33,13 +33,13 @@
 //! assert_eq!(bv.get(1), Some(true));
 //! ```
 //!
-//! ### Creating a compact `BitBoxed` bit vector
+//! ### Creating a compact `BitVector` bit vector
 //!
 //! ```rust
-//! use toolkit::BitBoxed;
+//! use toolkit::BitVector;
 //! use toolkit::AccessBin;
 //!
-//! let bb = BitBoxed::with_ones(10);
+//! let bb = BitVector::with_ones(10);
 //! assert_eq!(bb.count_ones(), 10);
 //! assert_eq!(bb.get(9), Some(true));
 //! ```
@@ -47,11 +47,11 @@
 //! ### Iterating over positions of ones
 //!
 //! ```rust
-//! use toolkit::BitVec;
+//! use toolkit::BitVectorGrowable;
 //! use toolkit::AccessBin;
 //!
 //! let vv = vec![0, 3, 5];
-//! let bv: BitVec = vv.iter().copied().collect();
+//! let bv: BitVectorGrowable = vv.iter().copied().collect();
 //!
 //! let ones: Vec<usize> = bv.ones().collect();
 //! assert_eq!(ones, vv);
@@ -60,9 +60,9 @@
 //! ### Using `BitSliceWithOffset`
 //!
 //! ```rust
-//! use toolkit::{BitVec, BitSliceWithOffset};
+//! use toolkit::{BitVectorGrowable, BitSliceWithOffset};
 //!
-//! let mut bv = BitVec::new();
+//! let mut bv = BitVectorGrowable::new();
 //! bv.append_bits(0b1111_0000, 8);
 //! let slice = BitSliceWithOffset::new(&bv, 4);
 //!
@@ -71,7 +71,7 @@
 
 // TODO:
 // - add CacheLine-based bit vectors
-// - create a BitBoxed with fixed size (with_zeros() or with_ones())
+// - create a BitVector with fixed size (with_zeros() or with_ones())
 // - add a function to get a BitSlice from a starting word of a given bitlength
 
 use crate::AccessBin;
@@ -81,21 +81,21 @@ use mem_dbg::*;
 use serde::{Deserialize, Serialize};
 
 /// A resizable, growable, and mutable bit vector.
-pub type BitVec = BitVector<Vec<u64>>;
+pub type BitVectorGrowable = BitVectorGeneric<Vec<u64>>;
 /// Bit operations on a slice of u64, immutable or mutable but not growable bit vector.
-pub type BitSlice<'a> = BitVector<&'a [u64]>;
+pub type BitSlice<'a> = BitVectorGeneric<&'a [u64]>;
 /// Bit operations on a boxed slice of u64, immutable or mutable but not growable bit vector.
-pub type BitBoxed = BitVector<Box<[u64]>>;
+pub type BitVector = BitVectorGeneric<Box<[u64]>>;
 
 /// Implementation of an immutable bit vector.
 #[derive(Default, Clone, Serialize, Deserialize, Eq, PartialEq, MemSize, MemDbg)]
-pub struct BitVector<V: AsRef<[u64]>> {
+pub struct BitVectorGeneric<V: AsRef<[u64]>> {
     data: V,
     n_bits: usize,
 }
 
-impl<V: AsRef<[u64]>> BitVector<V> {
-    /// Creates a `BitVector` from raw parts.
+impl<V: AsRef<[u64]>> BitVectorGeneric<V> {
+    /// Creates a `BitVectorGeneric` from raw parts.
     ///
     /// # Safety
     ///
@@ -106,11 +106,11 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::{BitSlice, BitVec};
+    /// use toolkit::{BitSlice, BitVectorGrowable};
     ///
     /// let data = vec![0, 2, 3, 4, 5];
     /// let n_bits = data.len() * 64;
-    /// let bv = unsafe { BitVec::from_raw_parts(data, n_bits) };
+    /// let bv = unsafe { BitVectorGrowable::from_raw_parts(data, n_bits) };
     ///
     /// assert_eq!(bv.get_bits(64, 64), Some(2));
     ///
@@ -132,10 +132,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::{BitVec, BitSlice, AccessBin};
+    /// use toolkit::{BitVectorGrowable, BitSlice, AccessBin};
     ///
     /// let v = vec![0,2,3,4,5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     /// assert_eq!(bv.get(1), Some(false));
     ///
     /// assert_eq!(bv.get_bits(1, 3), Some(0b110)); // Accesses bits from index 1 to 3
@@ -173,10 +173,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::{BitVec};
+    /// use toolkit::{BitVectorGrowable};
     ///
     /// let v = vec![0,2,3,4,5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     ///
     /// assert_eq!(unsafe{bv.get_bits_unchecked(0, 4)}, 0b1101);
     /// assert_eq!(unsafe{bv.get_bits_unchecked(0, 0)}, 0);
@@ -212,10 +212,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     ///
     /// # Examples
     /// ```
-    /// use toolkit::{BitVec, AccessBin};
+    /// use toolkit::{BitVectorGrowable, AccessBin};
     ///
     /// let v = vec![0, 2, 3, 5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     ///
     /// assert_eq!(bv.next_one(0), Some(0)); // First 1 at position 0
     /// assert_eq!(bv.next_one(1), Some(2)); // Next 1 after position 1 is at position 2
@@ -259,10 +259,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     ///
     /// # Examples
     /// ```
-    /// use toolkit::{BitVec};
+    /// use toolkit::{BitVectorGrowable};
     ///
     /// let v = vec![0, 2, 3, 5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     ///
     /// assert_eq!(bv.next_zero(0), Some(1)); // First 0 after position 0 is at position 1
     /// assert_eq!(bv.next_zero(2), Some(4)); // Next 0 after position 2 is at position 4
@@ -367,10 +367,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
     /// let v = vec![0,2,3,4,5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     ///
     /// // Get the 64-bit word at index 0
     /// let word = bv.get_word(0);
@@ -399,10 +399,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
-    /// let bv: BitVec = vv.iter().copied().collect();
+    /// let bv: BitVectorGrowable = vv.iter().copied().collect();
     ///
     /// let v: Vec<usize> = bv.ones().collect();
     /// assert_eq!(v, vv);
@@ -419,10 +419,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
-    /// let bv: BitVec = vv.iter().copied().collect();
+    /// let bv: BitVectorGrowable = vv.iter().copied().collect();
     ///
     /// let v: Vec<usize> = bv.ones_with_pos(2).collect();
     /// assert_eq!(v, vec![63, 128, 129, 254, 1026]);
@@ -439,11 +439,11 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     /// use toolkit::gen_sequences::negate_vector;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
-    /// let bv: BitVec = vv.iter().copied().collect();
+    /// let bv: BitVectorGrowable = vv.iter().copied().collect();
     ///
     /// let v: Vec<usize> = bv.zeros().collect();
     /// assert_eq!(v, negate_vector(&vv));
@@ -460,11 +460,11 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     /// use toolkit::gen_sequences::negate_vector;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
-    /// let bv: BitVec = vv.iter().copied().collect();
+    /// let bv: BitVectorGrowable = vv.iter().copied().collect();
     ///
     /// let v: Vec<usize> = bv.zeros_with_pos(100).collect();
     /// let expected: Vec<usize> = negate_vector(&vv).into_iter().filter(|&x| x >= 100).collect();
@@ -482,10 +482,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
     /// let v = vec![0,2,3,5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     ///
     /// let mut iter = bv.iter();
     /// assert_eq!(iter.next(), Some(true)); // First bit is true
@@ -514,10 +514,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
     /// let v = vec![0,2,3,4,5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     ///
     /// assert!(!bv.is_empty());
     /// ```
@@ -535,10 +535,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
     /// let v = vec![0,2,3,4,5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     ///
     /// assert_eq!(bv.len(), 6);
     /// ```
@@ -552,10 +552,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
     /// let v = vec![0,2,3,4,5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     ///
     /// assert_eq!(bv.count_ones(), 5);
     /// ```
@@ -573,10 +573,10 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
     /// let v = vec![0,2,3,4,5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     ///
     /// assert_eq!(bv.count_zeros(), 1);
     /// ```
@@ -587,16 +587,16 @@ impl<V: AsRef<[u64]>> BitVector<V> {
     }
 }
 
-impl<V: AsRef<[u64]>> AccessBin for BitVector<V> {
+impl<V: AsRef<[u64]>> AccessBin for BitVectorGeneric<V> {
     /// Returns the bit at the given position `index`,
     /// or [`None`] if `index` is out of bounds.
     ///
     /// # Examples
     /// ```
-    /// use toolkit::{BitVec, AccessBin};
+    /// use toolkit::{BitVectorGrowable, AccessBin};
     ///
     /// let v = vec![0,2,3,4,5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     ///
     /// assert_eq!(bv.get(5), Some(true));
     /// assert_eq!(bv.get(1), Some(false));
@@ -617,10 +617,10 @@ impl<V: AsRef<[u64]>> AccessBin for BitVector<V> {
     ///
     /// # Examples
     /// ```
-    /// use toolkit::{BitVec, AccessBin};
+    /// use toolkit::{BitVectorGrowable, AccessBin};
     ///
     /// let v = vec![0,2,3,4,5];
-    /// let bv: BitVec = v.into_iter().collect();
+    /// let bv: BitVectorGrowable = v.into_iter().collect();
     ///
     /// assert_eq!(unsafe{bv.get_unchecked(5)}, true);
     /// ```
@@ -630,44 +630,7 @@ impl<V: AsRef<[u64]>> AccessBin for BitVector<V> {
     }
 }
 
-impl<V> BitVector<V>
-where
-    V: AsRef<[u64]>,
-{
-    /// Converts the `BitVector` into a new `BitVector` with a different data type.
-    ///
-    /// We do not implement `From<BitVector<S>> for BitVector<D>` because it would conflict with the blanket
-    /// implementation `impl<T> From<T> for T>` provided by the standard library when `V == D`.
-    /// Instead, we expose a `convert_into` method to handle the conversion explicitly without ambiguity.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use toolkit::{BitVec, BitBoxed, AccessBin};
-    ///
-    /// let mut bv = BitVec::new();
-    /// bv.push(true);
-    /// bv.push(false);
-    /// bv.push(true);
-    ///
-    /// // Convert from growable BitVec to fixed-size BitBoxed
-    /// let bb: BitBoxed = bv.convert_into();
-    ///
-    /// assert_eq!(bb.len(), 3);
-    /// assert_eq!(bb.get(0), Some(true));
-    /// assert_eq!(bb.get(1), Some(false));
-    /// ```
-    pub fn convert_into<D>(&self) -> BitVector<D>
-    where
-        D: AsRef<[u64]> + From<Vec<u64>>,
-    {
-        let data = self.data.as_ref().to_vec().into();
-        let n_bits = self.n_bits;
-        BitVector { data, n_bits }
-    }
-}
-
-impl<V: AsRef<[u64]> + AsMut<[u64]>> BitVector<V> {
+impl<V: AsRef<[u64]> + AsMut<[u64]>> BitVectorGeneric<V> {
     /// Sets the bit at the given position `index` to `bit`.
     ///
     /// # Panics
@@ -677,9 +640,9 @@ impl<V: AsRef<[u64]> + AsMut<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::{BitVec, BitBoxed, AccessBin};
+    /// use toolkit::{BitVectorGrowable, BitVector, AccessBin};
     ///
-    /// let mut bv = BitVec::with_capacity(2);
+    /// let mut bv = BitVectorGrowable::with_capacity(2);
     /// bv.push(true);
     /// bv.push(false);
     ///
@@ -689,7 +652,7 @@ impl<V: AsRef<[u64]> + AsMut<[u64]>> BitVector<V> {
     /// // This will panic because index is out of bounds
     /// // bv.set(10, false);
     ///
-    /// let mut bb = BitBoxed::from(bv);
+    /// let mut bb = BitVector::from(bv);
     /// bb.set(0, false);
     /// assert_eq!(bb.get(0), Some(false));
     ///
@@ -717,13 +680,13 @@ impl<V: AsRef<[u64]> + AsMut<[u64]>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::{BitVec, BitBoxed};
+    /// use toolkit::{BitVectorGrowable, BitVector};
     ///
-    /// let mut bv = BitVec::with_zeros(5);
+    /// let mut bv = BitVectorGrowable::with_zeros(5);
     /// bv.set_bits(0, 3, 0b101); // Sets bits 0 to 2 to 101
     /// assert_eq!(bv.get_bits(0, 3), Some(0b101));
     ///
-    /// let mut bb = BitBoxed::from(bv);
+    /// let mut bb = BitVector::from(bv);
     /// bb.set_bits(0, 3, 0b100); // Sets bits 0 to 2 to 100
     /// assert_eq!(bb.get_bits(0, 3), Some(0b100))
     /// ```
@@ -754,15 +717,15 @@ impl<V: AsRef<[u64]> + AsMut<[u64]>> BitVector<V> {
     }
 }
 
-impl BitVector<Vec<u64>> {
+impl BitVectorGeneric<Vec<u64>> {
     /// Creates a new empty growable bit vector.
     ///
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
-    /// let bv = BitVec::new();
+    /// let bv = BitVectorGrowable::new();
     /// assert_eq!(bv.len(), 0);
     /// ```
     #[must_use]
@@ -775,9 +738,9 @@ impl BitVector<Vec<u64>> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
-    /// let bv = BitVec::new();
+    /// let bv = BitVectorGrowable::new();
     /// assert_eq!(bv.len(), 0);
     /// ```
     #[must_use]
@@ -798,9 +761,9 @@ impl BitVector<Vec<u64>> {
     /// # Example
     ///
     /// ```
-    /// use toolkit::{BitVec, AccessBin};
+    /// use toolkit::{BitVectorGrowable, AccessBin};
     ///
-    /// let mut bv = BitVec::new();
+    /// let mut bv = BitVectorGrowable::new();
     /// bv.push(true);
     /// bv.push(false);
     /// bv.push(true);
@@ -837,9 +800,9 @@ impl BitVector<Vec<u64>> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
-    /// let mut bv = BitVec::with_capacity(7);
+    /// let mut bv = BitVectorGrowable::with_capacity(7);
     /// bv.append_bits(0b101, 3);  // appends 101
     /// bv.append_bits(0b0110, 4); // appends 0110  
     ///
@@ -874,12 +837,12 @@ impl BitVector<Vec<u64>> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::{BitVec, AccessBin};
+    /// use toolkit::{BitVectorGrowable, AccessBin};
     ///
-    /// let mut bv1 = BitVec::new();
+    /// let mut bv1 = BitVectorGrowable::new();
     /// bv1.append_bits(0b101, 3);  // bv1 = [1,0,1]
     ///
-    /// let mut bv2 = BitVec::new();
+    /// let mut bv2 = BitVectorGrowable::new();
     /// bv2.append_bits(0b110, 3);  // bv2 = [0,1,1]
     ///
     /// bv1.concat(&bv2);           // bv1 = [1,0,1,0,1,1]
@@ -889,7 +852,7 @@ impl BitVector<Vec<u64>> {
     /// assert_eq!(bv1.get(3), Some(false)); // First bit from bv2
     /// assert_eq!(bv1.get(5), Some(true));  // Last bit from bv2
     /// ```
-    pub fn concat<W: AsRef<[u64]>>(&mut self, rhs: impl AsRef<BitVector<W>>) {
+    pub fn concat<W: AsRef<[u64]>>(&mut self, rhs: impl AsRef<BitVectorGeneric<W>>) {
         let rhs = rhs.as_ref();
 
         if rhs.is_empty() {
@@ -929,9 +892,9 @@ impl BitVector<Vec<u64>> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::{BitVec, AccessBin};
+    /// use toolkit::{BitVectorGrowable, AccessBin};
     ///
-    /// let mut bv = BitVec::with_capacity(10);
+    /// let mut bv = BitVectorGrowable::with_capacity(10);
     /// bv.extend_with_zeros(10);
     /// assert_eq!(bv.len(), 10);
     /// assert_eq!(bv.get(8), Some(false));
@@ -951,9 +914,9 @@ impl BitVector<Vec<u64>> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::{BitVec, AccessBin};
+    /// use toolkit::{BitVectorGrowable, AccessBin};
     ///
-    /// let mut bv = BitVec::with_capacity(100);
+    /// let mut bv = BitVectorGrowable::with_capacity(100);
     /// bv.extend_with_ones(100);
     /// assert_eq!(bv.len(), 100);
     /// assert_eq!(bv.get(8), Some(true));
@@ -976,9 +939,9 @@ impl BitVector<Vec<u64>> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     ///
-    /// let mut bv = BitVec::with_capacity(1000);
+    /// let mut bv = BitVectorGrowable::with_capacity(1000);
     /// bv.push(true);
     /// bv.push(false);
     ///
@@ -992,15 +955,15 @@ impl BitVector<Vec<u64>> {
     }
 }
 
-impl<V: AsRef<[u64]> + From<Vec<u64>>> BitVector<V> {
+impl<V: AsRef<[u64]> + From<Vec<u64>>> BitVectorGeneric<V> {
     /// Creates a bit vector with `n_bits` set to 0.
     ///
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitBoxed;
+    /// use toolkit::BitVector;
     ///
-    /// let bb = BitBoxed::with_zeros(5);
+    /// let bb = BitVector::with_zeros(5);
     /// assert_eq!(bb.len(), 5);
     /// assert_eq!(bb.count_ones(), 0);
     /// ```
@@ -1009,7 +972,7 @@ impl<V: AsRef<[u64]> + From<Vec<u64>>> BitVector<V> {
         let n_words = n_bits.div_ceil(64);
         let data = vec![0_u64; n_words];
 
-        BitVector {
+        BitVectorGeneric {
             data: data.into(),
             n_bits,
         }
@@ -1020,17 +983,17 @@ impl<V: AsRef<[u64]> + From<Vec<u64>>> BitVector<V> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitBoxed;
+    /// use toolkit::BitVector;
     ///
-    /// let bb = BitBoxed::with_ones(5);
+    /// let bb = BitVector::with_ones(5);
     /// assert_eq!(bb.len(), 5);
     /// assert_eq!(bb.count_ones(), 5);
     ///
-    /// let bb = BitBoxed::with_ones(123);
+    /// let bb = BitVector::with_ones(123);
     /// assert_eq!(bb.len(), 123);
     /// assert_eq!(bb.count_ones(), 123);
     ///
-    /// let bb = BitBoxed::with_ones(128);
+    /// let bb = BitVector::with_ones(128);
     /// assert_eq!(bb.len(), 128);
     /// assert_eq!(bb.count_ones(), 128);
     /// ```
@@ -1045,14 +1008,14 @@ impl<V: AsRef<[u64]> + From<Vec<u64>>> BitVector<V> {
             (1_u64 << last_word) - 1
         });
 
-        BitVector {
+        BitVectorGeneric {
             data: data.into(),
             n_bits,
         }
     }
 }
 
-impl Extend<bool> for BitVector<Vec<u64>> {
+impl Extend<bool> for BitVectorGeneric<Vec<u64>> {
     fn extend<T>(&mut self, iter: T)
     where
         T: IntoIterator<Item = bool>,
@@ -1072,21 +1035,21 @@ impl Extend<bool> for BitVector<Vec<u64>> {
     */
 }
 
-/// Extends a `BitVector` with an iterator over `usize` values.
+/// Extends a `BitVectorGeneric` with an iterator over `usize` values.
 ///
 /// # Examples
 ///
 /// ```
-/// use toolkit::{BitVec, AccessBin};
+/// use toolkit::{BitVectorGrowable, AccessBin};
 ///
-/// let mut bv = BitVec::new();
+/// let mut bv = BitVectorGrowable::new();
 ///
 /// // Extending the bit vector with a range of positions
 /// bv.extend(0..5);
 /// assert_eq!(bv.len(), 5);
 /// assert_eq!(bv.get(3), Some(true));
 /// ```
-impl Extend<usize> for BitVector<Vec<u64>> {
+impl Extend<usize> for BitVectorGeneric<Vec<u64>> {
     fn extend<T>(&mut self, iter: T)
     where
         T: IntoIterator<Item = usize>,
@@ -1100,7 +1063,7 @@ impl Extend<usize> for BitVector<Vec<u64>> {
     }
 }
 
-// impl SpaceUsage for BitVector {
+// impl SpaceUsage for BitVectorGeneric {
 //     /// Returns the space usage in bytes.
 //     #[must_use]
 //     fn space_usage_byte(&self) -> usize {
@@ -1108,37 +1071,37 @@ impl Extend<usize> for BitVector<Vec<u64>> {
 //     }
 // }
 
-/// Creates a `BitVector` from an iterator over `bool` values.
+/// Creates a `BitVectorGeneric` from an iterator over `bool` values.
 ///
 /// # Examples
 ///
 /// ```
-/// use toolkit::{AccessBin, BitVec};
+/// use toolkit::{AccessBin, BitVectorGrowable};
 ///
 /// // Create a bit vector from an iterator over bool values
-/// let bv: BitVec = vec![true, false, true].into_iter().collect();
+/// let bv: BitVectorGrowable = vec![true, false, true].into_iter().collect();
 ///
 /// assert_eq!(bv.len(), 3);
 /// assert_eq!(bv.get(1), Some(false));
 /// ```
-impl FromIterator<bool> for BitVector<Vec<u64>> {
+impl FromIterator<bool> for BitVectorGeneric<Vec<u64>> {
     fn from_iter<T>(iter: T) -> Self
     where
         T: IntoIterator<Item = bool>,
     {
-        let mut bv = BitVec::default();
+        let mut bv = BitVectorGrowable::default();
         bv.extend(iter);
 
         bv
     }
 }
 
-impl FromIterator<bool> for BitVector<Box<[u64]>> {
+impl FromIterator<bool> for BitVectorGeneric<Box<[u64]>> {
     fn from_iter<T>(iter: T) -> Self
     where
         T: IntoIterator<Item = bool>,
     {
-        BitVector::<Vec<u64>>::from_iter(iter).into()
+        BitVectorGeneric::<Vec<u64>>::from_iter(iter).into()
     }
 }
 
@@ -1156,7 +1119,7 @@ impl_my_prim_int![
     i8, u8, i16, u16, i32, u32, i64, u64, isize, usize, u128, i128
 ];
 
-/// Creates a `BitVector` from an iterator over non-negative integer values.
+/// Creates a `BitVectorGeneric` from an iterator over non-negative integer values.
 ///
 /// # Panics
 /// Panics if any value of the sequence cannot be converted to usize.
@@ -1164,15 +1127,15 @@ impl_my_prim_int![
 /// # Examples
 ///
 /// ```
-/// use toolkit::{AccessBin, BitVec};
+/// use toolkit::{AccessBin, BitVectorGrowable};
 ///
 /// // Create a bit vector from an iterator over usize values
-/// let bv: BitVec = vec![0, 1, 3, 5].into_iter().collect();
+/// let bv: BitVectorGrowable = vec![0, 1, 3, 5].into_iter().collect();
 ///
 /// assert_eq!(bv.len(), 6);
 /// assert_eq!(bv.get(3), Some(true));
 /// ```
-impl<V> FromIterator<V> for BitVector<Vec<u64>>
+impl<V> FromIterator<V> for BitVectorGeneric<Vec<u64>>
 where
     V: MyPrimInt,
     <V as TryInto<usize>>::Error: std::fmt::Debug,
@@ -1182,7 +1145,7 @@ where
         T: IntoIterator<Item = V>,
         <V as TryInto<usize>>::Error: std::fmt::Debug,
     {
-        let mut bv = BitVector::<Vec<u64>>::default();
+        let mut bv = BitVectorGeneric::<Vec<u64>>::default();
         bv.extend(
             iter.into_iter()
                 .map(|x| x.try_into().expect("Cannot a value convert to usize")),
@@ -1192,7 +1155,7 @@ where
     }
 }
 
-impl<V> FromIterator<V> for BitVector<Box<[u64]>>
+impl<V> FromIterator<V> for BitVectorGeneric<Box<[u64]>>
 where
     V: MyPrimInt,
     <V as TryInto<usize>>::Error: std::fmt::Debug,
@@ -1202,31 +1165,31 @@ where
         T: IntoIterator<Item = V>,
         <V as TryInto<usize>>::Error: std::fmt::Debug,
     {
-        BitVector::<Vec<u64>>::from_iter(iter).convert_into()
+        BitVectorGeneric::<Vec<u64>>::from_iter(iter).into()
     }
 }
 
-/// Implements conversion from mutable `BitVector` to an immutable one.
+/// Implements conversion from mutable `BitVectorGeneric` to an immutable one.
 ///
-/// This conversion consumes the original mutable `BitVector` and creates an
+/// This conversion consumes the original mutable `BitVectorGeneric` and creates an
 /// immutable version.
 ///
 /// # Examples
 ///
 /// ```
-/// use toolkit::{BitVec,BitBoxed, AccessBin};
+/// use toolkit::{BitVectorGrowable,BitVector, AccessBin};
 ///
-/// let mut bvm = BitVec::new();
+/// let mut bvm = BitVectorGrowable::new();
 /// bvm.push(true);
 /// bvm.push(false);
 ///
-/// // Convert mutable BitVector to immutable BitVector
-/// let bv: BitBoxed = bvm.into();
+/// // Convert mutable BitVectorGeneric to immutable BitVectorGeneric
+/// let bv: BitVector = bvm.into();
 ///
 /// assert_eq!(bv.get(0), Some(true));
 /// ```
-impl From<BitVector<Vec<u64>>> for BitVector<Box<[u64]>> {
-    fn from(bvm: BitVector<Vec<u64>>) -> Self {
+impl From<BitVectorGeneric<Vec<u64>>> for BitVectorGeneric<Box<[u64]>> {
+    fn from(bvm: BitVectorGeneric<Vec<u64>>) -> Self {
         Self {
             data: bvm.data.into_boxed_slice(),
             n_bits: bvm.n_bits,
@@ -1234,27 +1197,27 @@ impl From<BitVector<Vec<u64>>> for BitVector<Box<[u64]>> {
     }
 }
 
-/// Implements conversion from an immutable `BitVector` to a mutable one.
+/// Implements conversion from an immutable `BitVectorGeneric` to a mutable one.
 ///
-/// This conversion takes ownership of the original `BitVector` and creates a mutable version.
+/// This conversion takes ownership of the original `BitVectorGeneric` and creates a mutable version.
 ///
 /// # Examples
 ///
 /// ```
-/// use toolkit::{BitVec, BitBoxed, AccessBin};
+/// use toolkit::{BitVectorGrowable, BitVector, AccessBin};
 ///
 /// let v = vec![0,2,3,4,5];
-/// let mut bv: BitBoxed = v.into_iter().collect();
+/// let mut bv: BitVector = v.into_iter().collect();
 ///
-/// let mut bvm: BitVec = bv.into();
+/// let mut bvm: BitVectorGrowable = bv.into();
 ///
 /// assert_eq!(bvm.get(0), Some(true));
 /// assert_eq!(bvm.len(), 6);
 /// bvm.push(true);
 /// assert_eq!(bvm.len(), 7);
 /// ```
-impl From<BitVector<Box<[u64]>>> for BitVector<Vec<u64>> {
-    fn from(bv: BitVector<Box<[u64]>>) -> Self {
+impl From<BitVectorGeneric<Box<[u64]>>> for BitVectorGeneric<Vec<u64>> {
+    fn from(bv: BitVectorGeneric<Box<[u64]>>) -> Self {
         Self {
             data: bv.data.into(),
             n_bits: bv.n_bits,
@@ -1262,8 +1225,26 @@ impl From<BitVector<Box<[u64]>>> for BitVector<Vec<u64>> {
     }
 }
 
-impl From<BitVector<&[u64]>> for BitVector<Vec<u64>> {
-    fn from(bv: BitVector<&[u64]>) -> Self {
+impl<V: AsRef<[u64]>> From<&BitVectorGeneric<V>> for BitVector {
+    fn from(bv: &BitVectorGeneric<V>) -> Self {
+        Self {
+            data: bv.data.as_ref().to_vec().into_boxed_slice(),
+            n_bits: bv.n_bits,
+        }
+    }
+}
+
+impl<V: AsRef<[u64]>> From<&BitVectorGeneric<V>> for BitVectorGrowable {
+    fn from(bv: &BitVectorGeneric<V>) -> Self {
+        Self {
+            data: bv.data.as_ref().to_vec(),
+            n_bits: bv.n_bits,
+        }
+    }
+}
+
+impl From<BitVectorGeneric<&[u64]>> for BitVectorGrowable {
+    fn from(bv: BitVectorGeneric<&[u64]>) -> Self {
         Self {
             data: bv.data.into(),
             n_bits: bv.n_bits,
@@ -1271,8 +1252,8 @@ impl From<BitVector<&[u64]>> for BitVector<Vec<u64>> {
     }
 }
 
-impl<V: AsRef<[u64]>> AsRef<BitVector<V>> for BitVector<V> {
-    fn as_ref(&self) -> &BitVector<V> {
+impl<V: AsRef<[u64]>> AsRef<BitVectorGeneric<V>> for BitVectorGeneric<V> {
+    fn as_ref(&self) -> &BitVectorGeneric<V> {
         self
     }
 }
@@ -1358,20 +1339,20 @@ impl<'a, const BIT: bool> Iterator for BitVectorBitPositionsIter<'a, BIT> {
     }
 }
 
-pub struct BitVectorIter<V: AsRef<[u64]>, T: AsRef<BitVector<V>>> {
+pub struct BitVectorIter<V: AsRef<[u64]>, T: AsRef<BitVectorGeneric<V>>> {
     bv: T,
     n_bits: usize,
     i: usize,
     _phantom: std::marker::PhantomData<V>,
 }
 
-impl<V: AsRef<[u64]>, T: AsRef<BitVector<V>>> ExactSizeIterator for BitVectorIter<V, T> {
+impl<V: AsRef<[u64]>, T: AsRef<BitVectorGeneric<V>>> ExactSizeIterator for BitVectorIter<V, T> {
     fn len(&self) -> usize {
         self.bv.as_ref().n_bits - self.i
     }
 }
 
-impl<V: AsRef<[u64]>, T: AsRef<BitVector<V>>> Iterator for BitVectorIter<V, T> {
+impl<V: AsRef<[u64]>, T: AsRef<BitVectorGeneric<V>>> Iterator for BitVectorIter<V, T> {
     type Item = bool;
     fn next(&mut self) -> Option<Self::Item> {
         if self.i < self.n_bits {
@@ -1383,8 +1364,8 @@ impl<V: AsRef<[u64]>, T: AsRef<BitVector<V>>> Iterator for BitVectorIter<V, T> {
     }
 }
 
-impl<V: AsRef<[u64]>> IntoIterator for BitVector<V> {
-    type IntoIter = BitVectorIter<V, BitVector<V>>;
+impl<V: AsRef<[u64]>> IntoIterator for BitVectorGeneric<V> {
+    type IntoIter = BitVectorIter<V, BitVectorGeneric<V>>;
     type Item = bool;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -1398,8 +1379,8 @@ impl<V: AsRef<[u64]>> IntoIterator for BitVector<V> {
     }
 }
 
-impl<'a, V: AsRef<[u64]>> IntoIterator for &'a BitVector<V> {
-    type IntoIter = BitVectorIter<V, &'a BitVector<V>>;
+impl<'a, V: AsRef<[u64]>> IntoIterator for &'a BitVectorGeneric<V> {
+    type IntoIter = BitVectorIter<V, &'a BitVectorGeneric<V>>;
     type Item = bool;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -1407,7 +1388,7 @@ impl<'a, V: AsRef<[u64]>> IntoIterator for &'a BitVector<V> {
     }
 }
 
-impl<V: AsRef<[u64]>> std::fmt::Debug for BitVector<V> {
+impl<V: AsRef<[u64]>> std::fmt::Debug for BitVectorGeneric<V> {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         let data_str: Vec<String> = self
             .data
@@ -1417,7 +1398,7 @@ impl<V: AsRef<[u64]>> std::fmt::Debug for BitVector<V> {
             .collect();
         write!(
             fmt,
-            "BitVector {{ n_bits:{:?}, data:{:?}}}",
+            "BitVectorGeneric {{ n_bits:{:?}, data:{:?}}}",
             self.n_bits, data_str
         )
     }
@@ -1436,7 +1417,7 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     /// use toolkit::BitSliceWithOffset;
     ///
     /// let v = vec![0b000001010, 0b01010111000000, u64::MAX];
@@ -1448,7 +1429,7 @@ impl<'a> BitSliceWithOffset<'a> {
     /// assert_eq!(bswo.len(), 59+64);
     /// assert_eq!(bswo.get_bits(0, 4), Some(0b1110));
     /// ```
-    pub fn new<V: AsRef<[u64]>>(bv: &'a BitVector<V>, offset: usize) -> Self {
+    pub fn new<V: AsRef<[u64]>>(bv: &'a BitVectorGeneric<V>, offset: usize) -> Self {
         if offset > bv.n_bits {
             return BitSliceWithOffset::default();
         }
@@ -1487,7 +1468,7 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     /// use toolkit::BitSliceWithOffset;
     ///
     /// let v = vec![0b000001010, 0b01010111000000, u64::MAX];
@@ -1523,7 +1504,7 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     /// use toolkit::BitSliceWithOffset;
     ///
     /// let v = vec![0b000001010, 0b01010111000000, u64::MAX];
@@ -1540,7 +1521,7 @@ impl<'a> BitSliceWithOffset<'a> {
     #[inline]
     pub unsafe fn get_bits_unchecked(&self, index: usize, len: usize) -> u64 {
         debug_assert!(index + len <= self.n_bits, "Index out of bounds");
-        unsafe { BitVector::<&[u64]>::get_bits_slice(self.data, index + self.offset, len) }
+        unsafe { BitVectorGeneric::<&[u64]>::get_bits_slice(self.data, index + self.offset, len) }
     }
 
     pub fn next_one(&self, index: usize) -> Option<usize> {
@@ -1559,7 +1540,7 @@ impl<'a> BitSliceWithOffset<'a> {
 
     pub unsafe fn next_one_unchecked(&self, index: usize) -> Option<usize> {
         if let Some(pos) = unsafe {
-            BitVector::<&[u64]>::next_bit_slice_unchecked::<true>(
+            BitVectorGeneric::<&[u64]>::next_bit_slice_unchecked::<true>(
                 self.data,
                 index + self.offset,
                 self.n_bits + self.offset,
@@ -1588,7 +1569,7 @@ impl<'a> BitSliceWithOffset<'a> {
 
     pub unsafe fn next_zero_unchecked(&self, index: usize) -> Option<usize> {
         if let Some(pos) = unsafe {
-            BitVector::<&[u64]>::next_bit_slice_unchecked::<false>(
+            BitVectorGeneric::<&[u64]>::next_bit_slice_unchecked::<false>(
                 self.data,
                 index + self.offset,
                 self.n_bits + self.offset,
@@ -1603,7 +1584,7 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     /// use toolkit::BitSliceWithOffset;
     ///
     /// let v = vec![0b000001010, 0b01010111000000, u64::MAX];
@@ -1625,7 +1606,7 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     /// use toolkit::BitSliceWithOffset;
     ///
     /// let v = vec![0b000001010, 0b01010111000000, u64::MAX];
@@ -1647,11 +1628,11 @@ impl<'a> BitSliceWithOffset<'a> {
     /// # Examples
     ///
     /// ```
-    /// use toolkit::BitVec;
+    /// use toolkit::BitVectorGrowable;
     /// use toolkit::gen_sequences::negate_vector;
     ///
     /// let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
-    /// let bv: BitVec = vv.iter().copied().collect();
+    /// let bv: BitVectorGrowable = vv.iter().copied().collect();
     ///
     /// let v: Vec<usize> = bv.zeros().collect();
     /// assert_eq!(v, negate_vector(&vv));
@@ -1691,7 +1672,7 @@ impl AccessBin for BitSliceWithOffset<'_> {
 
     unsafe fn get_unchecked(&self, index: usize) -> bool {
         debug_assert!(index < self.n_bits, "Index out of bounds");
-        unsafe { BitVector::<&[u64]>::get_bit_slice(self.data, index + self.offset) }
+        unsafe { BitVectorGeneric::<&[u64]>::get_bit_slice(self.data, index + self.offset) }
     }
 }
 
@@ -1702,14 +1683,14 @@ mod tests {
 
     #[test]
     fn test_is_empty() {
-        let bv = BitVec::default();
+        let bv = BitVectorGrowable::default();
         assert!(bv.is_empty());
     }
 
     // Build a bit vector of size n with even positions set to one
     // and odd ones to zero
-    fn build_alternate(n: usize) -> BitVec {
-        let mut bv = BitVec::with_capacity(n);
+    fn build_alternate(n: usize) -> BitVectorGrowable {
+        let mut bv = BitVectorGrowable::with_capacity(n);
         for i in 0..n {
             bv.push(i % 2 == 0);
         }
@@ -1729,7 +1710,7 @@ mod tests {
     #[test]
     fn test_iter() {
         let n = 1024 + 13;
-        let bv: BitVec = build_alternate(n).into();
+        let bv: BitVectorGrowable = build_alternate(n).into();
 
         for (i, bit) in bv.into_iter().enumerate() {
             assert_eq!(bit, i % 2 == 0);
@@ -1739,7 +1720,7 @@ mod tests {
     #[test]
     fn test_get_set_bits() {
         let n = 1024 + 13;
-        let mut bv = BitVec::new();
+        let mut bv = BitVectorGrowable::new();
         bv.extend_with_zeros(n);
 
         assert_eq!(bv.get_bits(61, 35).unwrap(), 0);
@@ -1761,13 +1742,13 @@ mod tests {
         let n = 1024 + 13;
         let bv = build_alternate(n);
 
-        let bv2: BitVec = (0..n).map(|x| x % 2 == 0).collect();
+        let bv2: BitVectorGrowable = (0..n).map(|x| x % 2 == 0).collect();
 
         assert_eq!(bv, bv2);
 
         /* Note: if last bits are zero, the bit vector may differ
         because we are inserting only position of ones */
-        let bv2: BitVec = (0..n).filter(|x| x % 2 == 0).collect();
+        let bv2: BitVectorGrowable = (0..n).filter(|x| x % 2 == 0).collect();
 
         assert_eq!(bv, bv2);
     }
@@ -1775,7 +1756,7 @@ mod tests {
     #[test]
     fn test_next_one_and_zero() {
         let n = 1024 + 13;
-        let bv = BitVec::with_ones(n);
+        let bv = BitVectorGrowable::with_ones(n);
 
         for i in 0..n {
             assert_eq!(bv.next_one(i).unwrap(), i);
@@ -1786,7 +1767,7 @@ mod tests {
             1, 129, 193, 257, 321, 385, 449, 513, 577, 641, 705, 769, 833, 897, 961,
         ];
 
-        let bv = BitVec::from_iter(v.iter().copied());
+        let bv = BitVectorGrowable::from_iter(v.iter().copied());
 
         let mut prev_pos = 0;
         for &p in v.iter() {
@@ -1808,7 +1789,7 @@ mod tests {
             assert_eq!(bswo.next_one(*v.last().unwrap() - offset + 1), None);
         }
 
-        let bv = BitVec::from_iter(v.iter().copied());
+        let bv = BitVectorGrowable::from_iter(v.iter().copied());
 
         let v = negate_vector(&v);
 
@@ -1823,7 +1804,7 @@ mod tests {
     #[test]
     fn test_get_bits_iter() {
         for n_bits in 3..4 {
-            let mut bv = BitVec::new();
+            let mut bv = BitVectorGrowable::new();
             let max = 1 << n_bits;
 
             for i in 0..1024 {
@@ -1839,7 +1820,7 @@ mod tests {
 
     #[test]
     fn test_get_bits_iter_2() {
-        let bv = BitVec::from_iter(vec![0, 63, 128, 129, 254, 1026]);
+        let bv = BitVectorGrowable::from_iter(vec![0, 63, 128, 129, 254, 1026]);
 
         for n_bits in 1..64 {
             let mut iter = bv.ones();
@@ -1851,12 +1832,12 @@ mod tests {
 
     #[test]
     fn test_iter_zeros() {
-        let bv = BitVec::default();
+        let bv = BitVectorGrowable::default();
         let v: Vec<usize> = bv.zeros().collect();
         assert!(v.is_empty());
 
         let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
-        let bv: BitVec = vv.iter().copied().collect();
+        let bv: BitVectorGrowable = vv.iter().copied().collect();
 
         let v: Vec<usize> = bv.zeros().collect();
         assert_eq!(v, negate_vector(&vv));
@@ -1868,12 +1849,12 @@ mod tests {
 
     #[test]
     fn test_iter_ones() {
-        let bv = BitVec::default();
+        let bv = BitVectorGrowable::default();
         let v: Vec<usize> = bv.ones().collect();
         assert!(v.is_empty());
 
         let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
-        let bv: BitVec = vv.iter().copied().collect();
+        let bv: BitVectorGrowable = vv.iter().copied().collect();
 
         let v: Vec<usize> = bv.ones().collect();
         assert_eq!(v, vv);
@@ -1891,24 +1872,24 @@ mod tests {
         assert_eq!(v, vec![]);
 
         let vv: Vec<usize> = (0..1024).collect();
-        let bv: BitVec = vv.iter().copied().collect();
+        let bv: BitVectorGrowable = vv.iter().copied().collect();
         let v: Vec<usize> = bv.ones().collect();
         assert_eq!(v, vv);
 
         let vv = gen_strictly_increasing_sequence(1024 * 4, 1 << 20);
 
-        let bv: BitVec = vv.iter().copied().collect();
+        let bv: BitVectorGrowable = vv.iter().copied().collect();
         let v: Vec<usize> = bv.ones().collect();
         assert_eq!(v, vv);
     }
 
     #[test]
     fn test_concat() {
-        let mut bv1 = BitVec::new();
+        let mut bv1 = BitVectorGrowable::new();
         bv1.push(true);
         bv1.push(false);
 
-        let mut bv2 = BitVec::new();
+        let mut bv2 = BitVectorGrowable::new();
         bv2.push(true);
         bv2.push(true);
 
@@ -1918,8 +1899,8 @@ mod tests {
         assert_eq!(bv1.get(2), Some(true));
 
         let vv: Vec<usize> = vec![0, 63, 128, 129, 254, 1026];
-        let mut bv1: BitVec = vv.iter().copied().collect();
-        let bv2: BitVec = vv.iter().copied().collect();
+        let mut bv1: BitVectorGrowable = vv.iter().copied().collect();
+        let bv2: BitVectorGrowable = vv.iter().copied().collect();
         bv1.concat(bv2);
         assert_eq!(bv1.len(), 2054);
         assert_eq!(bv1.get(1026), Some(true));

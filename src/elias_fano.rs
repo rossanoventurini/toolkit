@@ -3,9 +3,9 @@
 use mem_dbg::{MemDbg, MemSize};
 use serde::{Deserialize, Serialize};
 
-use crate::bitfield::BitFieldVec;
+use crate::bitfield::BitFieldGrowable;
 use crate::utils::msb;
-use crate::{BitBoxed, BitFieldBoxed, DArray, SelectBin};
+use crate::{BitVector, BitField, DArray, SelectBin};
 
 /// Compressed monotone increasing sequence through Elias-Fano encoding.
 ///
@@ -27,7 +27,7 @@ use crate::{BitBoxed, BitFieldBoxed, DArray, SelectBin};
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, MemDbg, MemSize)]
 pub struct EliasFano {
     high_bits: DArray<false>,
-    low_bits: BitFieldBoxed,
+    low_bits: BitField,
     low_len: usize,
     universe: usize,
     num_vals: usize,
@@ -163,8 +163,8 @@ impl EliasFano {
 /// assert_eq!(ef.universe(), 8);
 /// ```
 pub struct EliasFanoBuilder {
-    high_bits: BitBoxed,
-    low_bits: BitFieldVec,
+    high_bits: BitVector,
+    low_bits: BitFieldGrowable,
     universe: usize,
     num_vals: usize,
     pos: usize,
@@ -186,8 +186,8 @@ impl EliasFanoBuilder {
         let low_len = msb(universe / num_vals) as usize;
 
         Self {
-            high_bits: BitBoxed::with_zeros((num_vals + 1) + (universe >> low_len) + 1),
-            low_bits: BitFieldVec::with_capacity(num_vals, low_len as u8),
+            high_bits: BitVector::with_zeros((num_vals + 1) + (universe >> low_len) + 1),
+            low_bits: BitFieldGrowable::with_capacity(num_vals, low_len as u8),
             universe,
             num_vals,
             pos: 0,

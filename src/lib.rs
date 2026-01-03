@@ -4,10 +4,10 @@
 
 pub mod bitvector;
 // pub use bitvector::bitvector_collection::{BitBoxedCollection, BitVecCollection};
-pub use bitvector::{BitBoxed, BitSlice, BitSliceWithOffset, BitVec};
+pub use bitvector::{BitVector, BitSlice, BitSliceWithOffset, BitVectorGrowable};
 
 pub mod bitfield;
-pub use bitfield::{BitFieldBoxed, BitFieldSlice, BitFieldVec};
+pub use bitfield::{BitField, BitFieldGeneric, BitFieldSlice, BitFieldGrowable};
 
 pub mod darray;
 pub use darray::DArray;
