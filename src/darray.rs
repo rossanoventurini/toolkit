@@ -227,6 +227,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// let v: Vec<usize> = da.ones().collect();
     /// assert_eq!(v, vv);
     /// ```
+    #[must_use]
     pub fn ones(&self) -> BitVectorBitPositionsIter<'_, true> {
         self.bv.ones()
     }
@@ -244,6 +245,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// let v: Vec<usize> = da.ones_with_pos(2).collect();
     /// assert_eq!(v, vec![63, 128, 129, 254, 1026]);
     /// ```
+    #[must_use]
     pub fn ones_with_pos(&self, pos: usize) -> BitVectorBitPositionsIter<'_, true> {
         self.bv.ones_with_pos(pos)
     }
@@ -262,6 +264,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// let v: Vec<usize> = da.zeros().collect();
     /// assert_eq!(v, negate_vector(&vv));
     /// ```
+    #[must_use]
     pub fn zeros(&self) -> BitVectorBitPositionsIter<'_, false> {
         self.bv.zeros()
     }
@@ -279,6 +282,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     /// let v: Vec<usize> = da.zeros_with_pos(2).collect();
     /// assert_eq!(v, vec![3]);
     /// ```
+    #[must_use]
     pub fn zeros_with_pos(&self, pos: usize) -> BitVectorBitPositionsIter<'_, false> {
         self.bv.zeros_with_pos(pos)
     }
@@ -318,6 +322,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     ///
     /// assert_eq!(da.count_ones(), 5);
     /// ```
+    #[must_use]
     pub fn count_ones(&self) -> usize {
         self.ones_inventories.n_sets
     }
@@ -334,6 +339,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     ///
     /// assert_eq!(da.count_zeros(), 1);
     /// ```
+    #[must_use]
     pub fn count_zeros(&self) -> usize {
         self.bv.len() - self.ones_inventories.n_sets
     }
@@ -350,6 +356,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     ///
     /// assert_eq!(da.len(), 6);
     /// ```
+    #[must_use]
     pub fn len(&self) -> usize {
         self.bv.len()
     }
@@ -366,6 +373,7 @@ impl<const SELECT0_SUPPORT: bool> DArray<SELECT0_SUPPORT> {
     ///
     /// assert!(da.is_empty());
     /// ```
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.bv.len() == 0
     }
