@@ -16,10 +16,13 @@ pub mod elias_fano;
 pub use elias_fano::EliasFano;
 pub use elias_fano::EliasFanoBuilder;
 
+#[cfg(feature = "streamvbyte")]
 pub mod stream_vbyte;
+#[cfg(feature = "streamvbyte")]
 pub use stream_vbyte::StreamVByte;
-
+#[cfg(feature = "streamvbyte")]
 pub use stream_vbyte::StreamVByteIter;
+#[cfg(feature = "streamvbyte")]
 pub use stream_vbyte::StreamVByteRandomAccess;
 
 pub mod fenwick_tree;

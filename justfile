@@ -11,7 +11,7 @@ perf_ef:
     ./target/release/perf_elias_fano
 
 perf_vb:
-    RUSTFLAGS='-C target-cpu=native' cargo build --release
+    RUSTFLAGS='-C target-cpu=native' cargo build --release --features streamvbyte
     ./target/release/perf_streamvbyte
 
 perf_fenwick_tree:
