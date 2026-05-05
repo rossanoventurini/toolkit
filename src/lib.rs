@@ -24,6 +24,8 @@ pub use stream_vbyte::StreamVByte;
 pub use stream_vbyte::StreamVByteIter;
 #[cfg(feature = "streamvbyte")]
 pub use stream_vbyte::StreamVByteRandomAccess;
+#[cfg(feature = "streamvbyte")]
+pub use stream_vbyte::StreamVByteBlocks;
 
 pub mod fenwick_tree;
 pub use fenwick_tree::FenwickTree;

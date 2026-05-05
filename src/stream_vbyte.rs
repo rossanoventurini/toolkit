@@ -653,6 +653,211 @@ impl<'a, T: SVBEncodable + Default> ExactSizeIterator for StreamVByteIter<'a, T>
     }
 }
 
+/// Block-granular random access for Stream VByte encoded data.
+///
+/// Encodes a flat sequence of values split into variable-size blocks defined
+/// by a caller-supplied CSR-style boundary array. Each block is stored as a
+/// self-contained sub-stream `[length-1 byte][control bytes][data bytes]`.
+/// Random access to any block is O(1) (one array lookup) plus the cost of
+/// decoding that block.
+///
+/// # Type Parameters
+///
+/// * `T` - The unsigned integer type (`u32` or `u16`; must implement `SVBEncodable`).
+///
+/// # Examples
+///
+/// ```rust
+/// use toolkit::stream_vbyte::StreamVByteBlocks;
+///
+/// let data: Vec<u32> = (0..100).collect();
+/// let offsets = vec![0usize, 32, 64, 100];
+/// let blocks = StreamVByteBlocks::new(&data, &offsets);
+///
+/// assert_eq!(blocks.num_blocks(), 3);
+/// assert_eq!(blocks.block_len(0), 32);
+///
+/// let mut buf = vec![0u32; blocks.max_block_len()];
+/// let n = blocks.get_block(1, &mut buf);
+/// assert_eq!(&buf[..n], &data[32..64]);
+/// ```
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, MemSize, MemDbg)]
+pub struct StreamVByteBlocks<T: SVBEncodable> {
+    stream: Box<[u8]>,
+    byte_offsets: Box<[usize]>, // length num_blocks + 1; last entry = stream len before SIMD pad
+    max_block_len: usize,
+    total_values: usize,
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T: SVBEncodable + Default> StreamVByteBlocks<T> {
+    /// Creates a new `StreamVByteBlocks` from a flat input slice and a CSR-style
+    /// boundary array.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The flat sequence of values to encode.
+    /// * `offsets` - Boundary array of length `num_blocks + 1`. Must satisfy
+    ///   `offsets[0] == 0`, `offsets.last() == input.len()`, and be strictly
+    ///   increasing. Every block must contain 1–256 values.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `offsets` is empty, does not start at 0, does not end at
+    /// `input.len()`, contains an empty block, or contains a block with more
+    /// than 256 values.
+    pub fn new(input: &[T], offsets: &[usize]) -> Self {
+        assert!(
+            !offsets.is_empty() && offsets[0] == 0,
+            "offsets must be non-empty and start with 0"
+        );
+        assert!(
+            offsets.last() == Some(&input.len()),
+            "offsets.last() must equal input.len()"
+        );
+
+        let num_blocks = offsets.len() - 1;
+        let mut stream: Vec<u8> = Vec::new();
+        let mut byte_offsets: Vec<usize> = Vec::with_capacity(num_blocks + 1);
+        byte_offsets.push(0);
+        let mut max_block_len = 0usize;
+
+        for i in 0..num_blocks {
+            let start = offsets[i];
+            let end = offsets[i + 1];
+            let block_len = end - start;
+
+            assert!(block_len > 0, "empty blocks are not allowed (block {})", i);
+            assert!(
+                block_len <= 256,
+                "block size must be at most 256 (block {} has {} values)",
+                i,
+                block_len
+            );
+
+            max_block_len = max_block_len.max(block_len);
+
+            let svb = StreamVByte::encode(&input[start..end]);
+            let n_ctrl = block_len.div_ceil(T::N_CONTROL);
+            let ctrl_bytes = &svb.control_bytes[..n_ctrl];
+            // svb.data has 15 trailing SIMD pad bytes; strip them before concatenating
+            let actual_data_len = svb.data.len() - 15;
+            let data_bytes = &svb.data[..actual_data_len];
+
+            stream.push((block_len - 1) as u8);
+            stream.extend_from_slice(ctrl_bytes);
+            stream.extend_from_slice(data_bytes);
+
+            byte_offsets.push(stream.len());
+        }
+
+        // Single 15-byte SIMD trailing pad ensures the decoder never reads out of bounds
+        // on the last block.
+        stream.extend_from_slice(&[0u8; 15]);
+
+        Self {
+            stream: stream.into_boxed_slice(),
+            byte_offsets: byte_offsets.into_boxed_slice(),
+            max_block_len,
+            total_values: input.len(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Returns the number of values in block `i`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= num_blocks()`.
+    pub fn block_len(&self, i: usize) -> usize {
+        assert!(i < self.num_blocks(), "block index out of bounds");
+        self.stream[self.byte_offsets[i]] as usize + 1
+    }
+
+    /// Decodes block `i` into `buffer` and returns its length.
+    ///
+    /// # Arguments
+    ///
+    /// * `i` - Block index (must be `< num_blocks()`).
+    /// * `buffer` - Output buffer; must have `len() >= block_len(i)`.
+    ///
+    /// # Returns
+    ///
+    /// The number of values decoded (equal to `block_len(i)`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= num_blocks()` or `buffer.len() < block_len(i)`.
+    pub fn get_block(&self, i: usize, buffer: &mut [T]) -> usize {
+        assert!(i < self.num_blocks(), "block index out of bounds");
+
+        let block_start = self.byte_offsets[i];
+        let block_len = self.stream[block_start] as usize + 1;
+
+        assert!(
+            buffer.len() >= block_len,
+            "Output buffer is not large enough"
+        );
+
+        let n_ctrl = block_len.div_ceil(T::N_CONTROL);
+        let ctrl_start = block_start + 1;
+        let ctrl_end = ctrl_start + n_ctrl;
+
+        let control_bytes = &self.stream[ctrl_start..ctrl_end];
+        // Slice the data region starting from ctrl_end; this includes subsequent
+        // blocks and/or the trailing SIMD pad, all of which are valid memory for
+        // the unmasked SIMD loads in decode_slice_aligned.
+        let data = &self.stream[ctrl_end..];
+
+        let n_aligned_ctrl = block_len / T::N_CONTROL; // full control bytes (aligned portion)
+        let tail_count = block_len % T::N_CONTROL;
+
+        let mut data_offset = 0usize;
+        let mut out_offset = 0usize;
+
+        if n_aligned_ctrl > 0 {
+            data_offset = crate::stream_vbyte::utils::decode_slice_aligned(
+                &mut buffer[..n_aligned_ctrl * T::N_CONTROL],
+                &control_bytes[..n_aligned_ctrl],
+                data,
+            );
+            out_offset = n_aligned_ctrl * T::N_CONTROL;
+        }
+
+        if tail_count > 0 {
+            T::decode_control_byte(
+                tail_count,
+                control_bytes[n_aligned_ctrl],
+                &data[data_offset..],
+                &mut buffer[out_offset..],
+            );
+        }
+
+        block_len
+    }
+
+    /// Returns the number of blocks.
+    pub fn num_blocks(&self) -> usize {
+        self.byte_offsets.len().saturating_sub(1)
+    }
+
+    /// Returns the total number of values across all blocks.
+    pub fn len(&self) -> usize {
+        self.total_values
+    }
+
+    /// Returns `true` if there are no blocks.
+    pub fn is_empty(&self) -> bool {
+        self.total_values == 0
+    }
+
+    /// Returns the length of the largest block, useful for sizing a reusable
+    /// decode buffer: `vec![T::default(); blocks.max_block_len()]`.
+    pub fn max_block_len(&self) -> usize {
+        self.max_block_len
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1844,5 +2049,324 @@ mod tests {
         let ra = StreamVByteRandomAccess::new(&data, 16);
         let mut buffer = vec![0u32; 5]; // buffer too small for range
         ra.get_range(&mut buffer, 10..20); // range needs 10 elements but buffer has 5
+    }
+
+    // ============ STREAM VBYTE BLOCKS TESTS ============
+
+    fn make_offsets(sizes: &[usize]) -> Vec<usize> {
+        let mut offsets = vec![0usize];
+        for &s in sizes {
+            offsets.push(offsets.last().unwrap() + s);
+        }
+        offsets
+    }
+
+    #[test]
+    fn test_blocks_empty_input() {
+        let data: Vec<u32> = vec![];
+        let blocks = StreamVByteBlocks::new(&data, &[0]);
+        assert_eq!(blocks.num_blocks(), 0);
+        assert_eq!(blocks.len(), 0);
+        assert!(blocks.is_empty());
+        assert_eq!(blocks.max_block_len(), 0);
+    }
+
+    #[test]
+    fn test_blocks_empty_input_u16() {
+        let data: Vec<u16> = vec![];
+        let blocks = StreamVByteBlocks::new(&data, &[0]);
+        assert_eq!(blocks.num_blocks(), 0);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn test_blocks_single_block_single_value() {
+        let data: Vec<u32> = vec![42];
+        let blocks = StreamVByteBlocks::new(&data, &[0, 1]);
+        assert_eq!(blocks.num_blocks(), 1);
+        assert_eq!(blocks.block_len(0), 1);
+        assert_eq!(blocks.max_block_len(), 1);
+
+        let mut buf = vec![0u32; 1];
+        let n = blocks.get_block(0, &mut buf);
+        assert_eq!(n, 1);
+        assert_eq!(buf, vec![42u32]);
+    }
+
+    #[test]
+    fn test_blocks_single_block_single_value_u16() {
+        let data: Vec<u16> = vec![1000];
+        let blocks = StreamVByteBlocks::new(&data, &[0, 1]);
+        let mut buf = vec![0u16; 1];
+        let n = blocks.get_block(0, &mut buf);
+        assert_eq!(n, 1);
+        assert_eq!(buf, vec![1000u16]);
+    }
+
+    #[test]
+    fn test_blocks_single_block_max_size() {
+        // Max allowed block size: 256 values
+        let data: Vec<u32> = (0..256).map(|i| (i * 7919) % 65536).collect();
+        let blocks = StreamVByteBlocks::new(&data, &[0, 256]);
+        assert_eq!(blocks.num_blocks(), 1);
+        assert_eq!(blocks.block_len(0), 256);
+
+        let mut buf = vec![0u32; 256];
+        let n = blocks.get_block(0, &mut buf);
+        assert_eq!(n, 256);
+        assert_eq!(buf, data);
+    }
+
+    #[test]
+    fn test_blocks_single_block_non_multiple_of_n_control() {
+        // 33 values: 8 full u32 control bytes (32 values) + 1 tail value
+        let data: Vec<u32> = (0..33).collect();
+        let blocks = StreamVByteBlocks::new(&data, &[0, 33]);
+        let mut buf = vec![0u32; 33];
+        let n = blocks.get_block(0, &mut buf);
+        assert_eq!(n, 33);
+        assert_eq!(buf, data);
+    }
+
+    #[test]
+    fn test_blocks_single_block_non_multiple_of_n_control_u16() {
+        // 37 values: 4 full u16 control bytes (32 values) + 5 tail values
+        let data: Vec<u16> = (0..37).map(|x| x as u16).collect();
+        let blocks = StreamVByteBlocks::new(&data, &[0, 37]);
+        let mut buf = vec![0u16; 37];
+        let n = blocks.get_block(0, &mut buf);
+        assert_eq!(n, 37);
+        assert_eq!(buf, data);
+    }
+
+    #[test]
+    fn test_blocks_many_small_blocks_typical_size() {
+        // Many 32-value blocks — the typical production case
+        let data: Vec<u32> = (0..320).collect();
+        let offsets = make_offsets(&vec![32; 10]);
+        let blocks = StreamVByteBlocks::new(&data, &offsets);
+
+        assert_eq!(blocks.num_blocks(), 10);
+        assert_eq!(blocks.len(), 320);
+        assert_eq!(blocks.max_block_len(), 32);
+
+        let mut buf = vec![0u32; 32];
+        for i in 0..10 {
+            let n = blocks.get_block(i, &mut buf);
+            assert_eq!(n, 32);
+            assert_eq!(&buf[..n], &data[i * 32..(i + 1) * 32], "block {}", i);
+        }
+    }
+
+    #[test]
+    fn test_blocks_many_small_blocks_u16() {
+        let data: Vec<u16> = (0..640).map(|x| x as u16).collect();
+        let offsets = make_offsets(&vec![64; 10]);
+        let blocks = StreamVByteBlocks::new(&data, &offsets);
+
+        assert_eq!(blocks.num_blocks(), 10);
+        let mut buf = vec![0u16; 64];
+        for i in 0..10 {
+            let n = blocks.get_block(i, &mut buf);
+            assert_eq!(&buf[..n], &data[i * 64..(i + 1) * 64], "block {}", i);
+        }
+    }
+
+    #[test]
+    fn test_blocks_variable_size_blocks() {
+        let data: Vec<u32> = (0..100).collect();
+        let offsets = make_offsets(&[32, 1, 64, 3]);
+        let blocks = StreamVByteBlocks::new(&data, &offsets);
+
+        assert_eq!(blocks.num_blocks(), 4);
+        assert_eq!(blocks.max_block_len(), 64);
+
+        let expected_lens = [32, 1, 64, 3];
+        let mut buf = vec![0u32; 64];
+        let mut start = 0;
+        for (i, &expected_len) in expected_lens.iter().enumerate() {
+            assert_eq!(blocks.block_len(i), expected_len, "block_len mismatch block {}", i);
+            let n = blocks.get_block(i, &mut buf);
+            assert_eq!(n, expected_len);
+            assert_eq!(&buf[..n], &data[start..start + expected_len], "block {}", i);
+            start += expected_len;
+        }
+    }
+
+    #[test]
+    fn test_blocks_mixed_value_byte_widths() {
+        // 1, 2, 3, and 4-byte u32 values in one block
+        let data: Vec<u32> = vec![
+            1, 2, 127, 255,         // 1-byte
+            256, 1000, 32767, 65535, // 2-byte
+            65536, 100000, 1000000, 16777215, // 3-byte
+            16777216, 2000000000, u32::MAX - 1, u32::MAX, // 4-byte
+        ];
+        let offsets = make_offsets(&[4, 4, 4, 4]);
+        let blocks = StreamVByteBlocks::new(&data, &offsets);
+
+        let mut buf = vec![0u32; 4];
+        for i in 0..4 {
+            let n = blocks.get_block(i, &mut buf);
+            assert_eq!(&buf[..n], &data[i * 4..(i + 1) * 4], "block {}", i);
+        }
+    }
+
+    #[test]
+    fn test_blocks_mixed_value_byte_widths_u16() {
+        let data: Vec<u16> = vec![
+            0, 1, 127, 255, 100, 200, 50, 10, // 1-byte
+            256, 1000, 32767, 65535, 500, 10000, 60000, u16::MAX, // 2-byte
+        ];
+        let offsets = make_offsets(&[8, 8]);
+        let blocks = StreamVByteBlocks::new(&data, &offsets);
+
+        let mut buf = vec![0u16; 8];
+        for i in 0..2 {
+            let n = blocks.get_block(i, &mut buf);
+            assert_eq!(&buf[..n], &data[i * 8..(i + 1) * 8], "block {}", i);
+        }
+    }
+
+    #[test]
+    fn test_blocks_all_zeros() {
+        let data: Vec<u32> = vec![0; 128];
+        let offsets = make_offsets(&vec![32; 4]);
+        let blocks = StreamVByteBlocks::new(&data, &offsets);
+        let mut buf = vec![0u32; 32];
+        for i in 0..4 {
+            let n = blocks.get_block(i, &mut buf);
+            assert_eq!(&buf[..n], &data[i * 32..(i + 1) * 32]);
+        }
+    }
+
+    #[test]
+    fn test_blocks_all_max_values() {
+        let data: Vec<u32> = vec![u32::MAX; 64];
+        let offsets = make_offsets(&vec![32; 2]);
+        let blocks = StreamVByteBlocks::new(&data, &offsets);
+        let mut buf = vec![0u32; 32];
+        for i in 0..2 {
+            let n = blocks.get_block(i, &mut buf);
+            assert_eq!(&buf[..n], &data[i * 32..(i + 1) * 32]);
+        }
+    }
+
+    #[test]
+    fn test_blocks_full_round_trip() {
+        // Decode all blocks in order and flatten; must equal original input
+        let data: Vec<u32> = (0..200).map(|i| (i * 17 + 13) % 65536).collect();
+        let offsets = make_offsets(&[32, 48, 1, 64, 55]);
+        let blocks = StreamVByteBlocks::new(&data, &offsets);
+
+        let mut recovered: Vec<u32> = Vec::with_capacity(data.len());
+        let mut buf = vec![0u32; blocks.max_block_len()];
+        for i in 0..blocks.num_blocks() {
+            let n = blocks.get_block(i, &mut buf);
+            recovered.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn test_blocks_full_round_trip_u16() {
+        let data: Vec<u16> = (0..200).map(|i| ((i * 17 + 13) % 65536) as u16).collect();
+        let offsets = make_offsets(&[32, 48, 8, 64, 48]);
+        let blocks = StreamVByteBlocks::new(&data, &offsets);
+
+        let mut recovered: Vec<u16> = Vec::with_capacity(data.len());
+        let mut buf = vec![0u16; blocks.max_block_len()];
+        for i in 0..blocks.num_blocks() {
+            let n = blocks.get_block(i, &mut buf);
+            recovered.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn test_blocks_block_len_matches_offsets() {
+        let sizes = vec![32usize, 1, 64, 17, 256, 3];
+        let total: usize = sizes.iter().sum();
+        let data: Vec<u32> = (0..total as u32).collect();
+        let offsets = make_offsets(&sizes);
+        let blocks = StreamVByteBlocks::new(&data, &offsets);
+
+        for (i, &expected) in sizes.iter().enumerate() {
+            assert_eq!(blocks.block_len(i), expected, "block {}", i);
+        }
+    }
+
+    #[test]
+    fn test_blocks_max_block_len() {
+        let data: Vec<u32> = (0..200).collect();
+        let offsets = make_offsets(&[32, 200 - 32]);
+        let blocks = StreamVByteBlocks::new(&data, &offsets);
+        assert_eq!(blocks.max_block_len(), 200 - 32);
+    }
+
+    #[test]
+    fn test_blocks_buffer_exactly_block_len() {
+        // Buffer sized to exactly block_len should not panic
+        let data: Vec<u32> = (0..32).collect();
+        let blocks = StreamVByteBlocks::new(&data, &[0, 32]);
+        let mut buf = vec![0u32; blocks.block_len(0)];
+        let n = blocks.get_block(0, &mut buf);
+        assert_eq!(n, 32);
+        assert_eq!(buf, data);
+    }
+
+    // ---- panic tests ----
+
+    #[test]
+    #[should_panic(expected = "offsets must be non-empty")]
+    fn test_blocks_panic_empty_offsets() {
+        let data: Vec<u32> = vec![1, 2, 3];
+        let _ = StreamVByteBlocks::new(&data, &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "offsets must be non-empty and start with 0")]
+    fn test_blocks_panic_offsets_not_starting_at_zero() {
+        let data: Vec<u32> = vec![1, 2, 3];
+        let _ = StreamVByteBlocks::new(&data, &[1, 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "offsets.last() must equal input.len()")]
+    fn test_blocks_panic_offsets_wrong_last() {
+        let data: Vec<u32> = vec![1, 2, 3];
+        let _ = StreamVByteBlocks::new(&data, &[0, 2]); // last should be 3
+    }
+
+    #[test]
+    #[should_panic(expected = "empty blocks are not allowed")]
+    fn test_blocks_panic_empty_block() {
+        let data: Vec<u32> = vec![1, 2, 3, 4];
+        let _ = StreamVByteBlocks::new(&data, &[0, 2, 2, 4]); // block 1 is empty
+    }
+
+    #[test]
+    #[should_panic(expected = "block size must be at most 256")]
+    fn test_blocks_panic_block_too_large() {
+        let data: Vec<u32> = (0..257).collect();
+        let _ = StreamVByteBlocks::new(&data, &[0, 257]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Output buffer is not large enough")]
+    fn test_blocks_panic_buffer_too_small() {
+        let data: Vec<u32> = (0..32).collect();
+        let blocks = StreamVByteBlocks::new(&data, &[0, 32]);
+        let mut buf = vec![0u32; 10]; // too small
+        blocks.get_block(0, &mut buf);
+    }
+
+    #[test]
+    #[should_panic(expected = "block index out of bounds")]
+    fn test_blocks_panic_block_index_oob() {
+        let data: Vec<u32> = (0..32).collect();
+        let blocks = StreamVByteBlocks::new(&data, &[0, 32]);
+        let mut buf = vec![0u32; 32];
+        blocks.get_block(1, &mut buf); // only block 0 exists
     }
 }
