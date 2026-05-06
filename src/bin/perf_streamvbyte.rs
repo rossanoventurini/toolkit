@@ -364,68 +364,40 @@ fn generate_offsets(data_len: usize, min_block: usize, max_block: usize) -> Vec<
     offsets
 }
 
-fn benchmark_blocks_vs_random_access(data: &[u32], offsets: &[usize], ra_block_size: usize) {
+fn benchmark_blocks_vs_random_access(
+    data: &[u32],
+    offsets: &[usize],
+    blocks: &StreamVByteBlocks<u32>,
+    block_ids: &[usize],
+    ra_block_size: usize,
+) {
     let num_blocks = offsets.len() - 1;
-    let avg_block = data.len() / num_blocks.max(1);
-    println!(
-        "\n    === StreamVByteBlocks vs StreamVByteRandomAccess (block_size={}) ===",
-        ra_block_size
-    );
-    println!(
-        "    {} values, {} variable blocks, avg block size {}",
-        data.len(),
-        num_blocks,
-        avg_block
-    );
-
-    // Build both structures
-    let t = Instant::now();
-    let blocks = StreamVByteBlocks::new(data, offsets);
-    let blocks_build = t.elapsed();
 
     let t = Instant::now();
     let ra = StreamVByteRandomAccess::new(data, ra_block_size);
     let ra_build = t.elapsed();
 
     println!(
-        "    Build — StreamVByteBlocks: {:?}  |  StreamVByteRandomAccess: {:?}",
-        blocks_build, ra_build
+        "\n    === StreamVByteRandomAccess (ra_block_size={}) ===",
+        ra_block_size
     );
     println!(
-        "    Memory — StreamVByteBlocks: {} B  |  StreamVByteRandomAccess: {} B",
-        blocks.mem_size(SizeFlags::default()),
+        "    Build: {:?}  |  Memory: {} B",
+        ra_build,
         ra.mem_size(SizeFlags::default())
     );
 
-    // Pre-generate 1M random block indices
-    let num_queries = 1_000_000;
-    let mut block_ids: Vec<usize> = Vec::with_capacity(num_queries);
-    let mut state = 99999u64;
-    for _ in 0..num_queries {
-        state = state.wrapping_mul(1103515245).wrapping_add(12345);
-        block_ids.push((state as usize) % num_blocks);
-    }
+    let num_queries = block_ids.len();
 
     let max_block = blocks.max_block_len();
     let mut buf = vec![0u32; max_block];
-
-    // --- StreamVByteBlocks ---
-    let mut prev = 0usize;
-    let mut total_elems = 0usize;
-    let t = Instant::now();
-    for &bi in &block_ids {
-        let bi = (bi + prev % 2) % num_blocks;
-        let n = blocks.get_block(bi, &mut buf);
-        prev = buf[0] as usize;
-        total_elems += n;
-    }
-    let blocks_time = t.elapsed();
+    let mut buf2 = vec![0u32; max_block];
 
     // --- StreamVByteRandomAccess with the same block boundaries ---
     let mut prev = 0usize;
     let mut ra_total = 0usize;
     let t = Instant::now();
-    for &bi in &block_ids {
+    for &bi in block_ids {
         let bi = (bi + prev % 2) % num_blocks;
         let range = offsets[bi]..offsets[bi + 1];
         let n = range.len();
@@ -435,18 +407,9 @@ fn benchmark_blocks_vs_random_access(data: &[u32], offsets: &[usize], ra_block_s
     }
     let ra_time = t.elapsed();
 
-    // Correctness: compare both structures against the original data for every block
-    let mut buf2 = vec![0u32; max_block];
+    // Correctness: verify RA against original data
     for bi in 0..num_blocks {
         let expected = &data[offsets[bi]..offsets[bi + 1]];
-
-        let n = blocks.get_block(bi, &mut buf);
-        assert_eq!(
-            &buf[..n], expected,
-            "StreamVByteBlocks mismatch at block {}",
-            bi
-        );
-
         ra.get_range(&mut buf2[..expected.len()], offsets[bi]..offsets[bi + 1]);
         assert_eq!(
             &buf2[..expected.len()], expected,
@@ -455,25 +418,13 @@ fn benchmark_blocks_vs_random_access(data: &[u32], offsets: &[usize], ra_block_s
         );
     }
 
-    let blocks_qps = num_queries as f64 / blocks_time.as_secs_f64();
-    let blocks_eps = total_elems as f64 / blocks_time.as_secs_f64() / 1e6;
     let ra_qps = num_queries as f64 / ra_time.as_secs_f64();
     let ra_eps = ra_total as f64 / ra_time.as_secs_f64() / 1e6;
 
-    println!("    --- {} queries ---", num_queries);
     println!(
-        "    StreamVByteBlocks:        {:>10?}  |  {:.0} q/s  |  {:.2} M int/s",
-        blocks_time, blocks_qps, blocks_eps
-    );
-    println!(
-        "    StreamVByteRandomAccess:  {:>10?}  |  {:.0} q/s  |  {:.2} M int/s",
+        "    StreamVByteRandomAccess:  {:>10?}  |  {:.0} q/s  |  {:.2} M int/s  |  ✓ correct",
         ra_time, ra_qps, ra_eps
     );
-    println!(
-        "    Speedup (Blocks / RA):    {:.2}x",
-        blocks_eps / ra_eps
-    );
-    println!("    ✓ Both structures verified correct against original data for all blocks");
 }
 
 fn main() {
@@ -487,9 +438,66 @@ fn main() {
     let data_size = 1_000_000;
     let data = generate_random_data(data_size, 65_536);
     let offsets = generate_offsets(data_size, 32, 64);
+    let num_blocks = offsets.len() - 1;
+    let avg_block = data_size / num_blocks.max(1);
 
-    // Compare against RA with several fixed block sizes to show the tradeoff
+    // Build StreamVByteBlocks once
+    let t = Instant::now();
+    let blocks = StreamVByteBlocks::new(&data, &offsets);
+    let blocks_build = t.elapsed();
+
+    println!(
+        "\n  StreamVByteBlocks: {} values, {} variable blocks, avg block size {}",
+        data_size, num_blocks, avg_block
+    );
+    println!(
+        "  Build: {:?}  |  Memory: {} B",
+        blocks_build,
+        blocks.mem_size(SizeFlags::default())
+    );
+
+    // Pre-generate 1M random block indices (shared across all RA comparisons)
+    let num_queries = 1_000_000;
+    let mut block_ids: Vec<usize> = Vec::with_capacity(num_queries);
+    let mut state = 99999u64;
+    for _ in 0..num_queries {
+        state = state.wrapping_mul(1103515245).wrapping_add(12345);
+        block_ids.push((state as usize) % num_blocks);
+    }
+
+    // Benchmark StreamVByteBlocks query performance once
+    let max_block = blocks.max_block_len();
+    let mut buf = vec![0u32; max_block];
+    let mut prev = 0usize;
+    let mut total_elems = 0usize;
+    let t = Instant::now();
+    for &bi in &block_ids {
+        let bi = (bi + prev % 2) % num_blocks;
+        let n = blocks.get_block(bi, &mut buf);
+        prev = buf[0] as usize;
+        total_elems += n;
+    }
+    let blocks_time = t.elapsed();
+    let blocks_eps = total_elems as f64 / blocks_time.as_secs_f64() / 1e6;
+    println!(
+        "  Query: {:?}  |  {:.0} q/s  |  {:.2} M int/s",
+        blocks_time,
+        num_queries as f64 / blocks_time.as_secs_f64(),
+        blocks_eps
+    );
+
+    // Correctness check
+    let mut buf2 = vec![0u32; max_block];
+    for bi in 0..num_blocks {
+        let expected = &data[offsets[bi]..offsets[bi + 1]];
+        let n = blocks.get_block(bi, &mut buf);
+        assert_eq!(&buf[..n], expected, "StreamVByteBlocks mismatch at block {}", bi);
+        buf2[..n].copy_from_slice(&buf[..n]);
+    }
+    println!("  ✓ Correctness verified against original data for all blocks");
+
+    // Compare against RA with several fixed block sizes
     for &ra_bs in &[4usize, 32, 64, 256] {
-        benchmark_blocks_vs_random_access(&data, &offsets, ra_bs);
+        benchmark_blocks_vs_random_access(&data, &offsets, &blocks, &block_ids, ra_bs);
     }
 }

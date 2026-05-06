@@ -65,6 +65,7 @@ use serde::{Deserialize, Serialize};
 // TODO: currently encoding is not using explicitly SIMD instructions. It can be made from 4x to 8x faster.
 
 use crate::stream_vbyte::utils::SVBEncodable;
+use crate::{EliasFano, EliasFanoBuilder};
 
 pub mod utils;
 
@@ -681,16 +682,28 @@ impl<'a, T: SVBEncodable + Default> ExactSizeIterator for StreamVByteIter<'a, T>
 /// let n = blocks.get_block(1, &mut buf);
 /// assert_eq!(&buf[..n], &data[32..64]);
 /// ```
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, MemSize, MemDbg)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, MemSize, MemDbg)]
 pub struct StreamVByteBlocks<T: SVBEncodable> {
     stream: Box<[u8]>,
-    byte_offsets: Box<[usize]>, // length num_blocks + 1; last entry = stream len before SIMD pad
+    byte_offsets: EliasFano, // num_blocks + 1 entries; last entry = stream len before SIMD pad
     max_block_len: usize,
     total_values: usize,
     _marker: std::marker::PhantomData<T>,
 }
 
-impl<T: SVBEncodable + Default> StreamVByteBlocks<T> {
+impl<T: SVBEncodable> Default for StreamVByteBlocks<T> {
+    fn default() -> Self {
+        Self {
+            stream: Box::default(),
+            byte_offsets: EliasFano::default(),
+            max_block_len: 0,
+            total_values: 0,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: SVBEncodable> StreamVByteBlocks<T> {
     /// Creates a new `StreamVByteBlocks` from a flat input slice and a CSR-style
     /// boundary array.
     ///
@@ -717,10 +730,21 @@ impl<T: SVBEncodable + Default> StreamVByteBlocks<T> {
         );
 
         let num_blocks = offsets.len() - 1;
-        let mut stream: Vec<u8> = Vec::new();
+        let total_values = input.len();
+
+        // Upper bound on stream size: 1 len-byte + ctrl-bytes + data-bytes per block, plus SIMD pad.
+        // T::BYTES * T::N_CONTROL == 16 for all SVBEncodable types (u32: 4*4, u16: 2*8).
+        let stream_capacity = num_blocks * 2
+            + total_values / T::N_CONTROL
+            + total_values * std::mem::size_of::<T>()
+            + 15;
+
+        let mut stream: Vec<u8> = Vec::with_capacity(stream_capacity);
         let mut byte_offsets: Vec<usize> = Vec::with_capacity(num_blocks + 1);
         byte_offsets.push(0);
         let mut max_block_len = 0usize;
+        // Scratch buffer for encode_control_byte data output; always 16 bytes for all T.
+        let mut scratch = [0u8; 16];
 
         for i in 0..num_blocks {
             let start = offsets[i];
@@ -737,16 +761,22 @@ impl<T: SVBEncodable + Default> StreamVByteBlocks<T> {
 
             max_block_len = max_block_len.max(block_len);
 
-            let svb = StreamVByte::encode(&input[start..end]);
             let n_ctrl = block_len.div_ceil(T::N_CONTROL);
-            let ctrl_bytes = &svb.control_bytes[..n_ctrl];
-            // svb.data has 15 trailing SIMD pad bytes; strip them before concatenating
-            let actual_data_len = svb.data.len() - 15;
-            let data_bytes = &svb.data[..actual_data_len];
 
             stream.push((block_len - 1) as u8);
-            stream.extend_from_slice(ctrl_bytes);
-            stream.extend_from_slice(data_bytes);
+
+            // Reserve slots for control bytes; filled in during the chunk loop below.
+            let ctrl_start = stream.len();
+            stream.resize(ctrl_start + n_ctrl, 0);
+
+            // Encode each chunk: write its control byte into the reserved slot and
+            // append its data bytes directly to the stream.
+            for (chunk_idx, chunk) in input[start..end].chunks(T::N_CONTROL).enumerate() {
+                let mut ctrl_byte = 0u8;
+                let encoded_len = T::encode_control_byte(chunk, &mut ctrl_byte, &mut scratch);
+                stream[ctrl_start + chunk_idx] = ctrl_byte;
+                stream.extend_from_slice(&scratch[..encoded_len]);
+            }
 
             byte_offsets.push(stream.len());
         }
@@ -755,11 +785,20 @@ impl<T: SVBEncodable + Default> StreamVByteBlocks<T> {
         // on the last block.
         stream.extend_from_slice(&[0u8; 15]);
 
+        // Encode byte_offsets with Elias-Fano (monotone strictly increasing sequence).
+        // Universe is stream.len() - 15 + 1: last offset equals stream length before the pad.
+        let ef_byte_offsets = {
+            let universe = byte_offsets.last().copied().unwrap_or(0) + 1;
+            let mut efb = EliasFanoBuilder::new(universe, byte_offsets.len());
+            efb.extend(byte_offsets.iter().copied());
+            efb.build()
+        };
+
         Self {
             stream: stream.into_boxed_slice(),
-            byte_offsets: byte_offsets.into_boxed_slice(),
+            byte_offsets: ef_byte_offsets,
             max_block_len,
-            total_values: input.len(),
+            total_values,
             _marker: std::marker::PhantomData,
         }
     }
@@ -771,7 +810,8 @@ impl<T: SVBEncodable + Default> StreamVByteBlocks<T> {
     /// Panics if `i >= num_blocks()`.
     pub fn block_len(&self, i: usize) -> usize {
         assert!(i < self.num_blocks(), "block index out of bounds");
-        self.stream[self.byte_offsets[i]] as usize + 1
+        let byte_start = self.byte_offsets.select(i).expect("block index in bounds");
+        self.stream[byte_start] as usize + 1
     }
 
     /// Decodes block `i` into `buffer` and returns its length.
@@ -791,7 +831,7 @@ impl<T: SVBEncodable + Default> StreamVByteBlocks<T> {
     pub fn get_block(&self, i: usize, buffer: &mut [T]) -> usize {
         assert!(i < self.num_blocks(), "block index out of bounds");
 
-        let block_start = self.byte_offsets[i];
+        let block_start = self.byte_offsets.select(i).expect("block index in bounds");
         let block_len = self.stream[block_start] as usize + 1;
 
         assert!(
