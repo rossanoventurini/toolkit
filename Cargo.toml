@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-# Enable streamvbyte compression, which requires SSSE3 (Intel/x86_64 only).
-# Disabled by default to allow compilation on non-x86 platforms (e.g. Apple Silicon).
+# Enable streamvbyte compression. Uses SSSE3 on x86_64 and a portable scalar
+# fallback elsewhere, so it builds on any architecture.
+
 streamvbyte = []
 
 [dependencies]
