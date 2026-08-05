@@ -1,6 +1,7 @@
 use num::PrimInt;
 use std::debug_assert;
 
+#[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_shuffle_epi8, _mm_storeu_si128};
 
 pub trait SVBEncodable: Sized + PrimInt {
@@ -72,6 +73,7 @@ pub trait SVBEncodable: Sized + PrimInt {
     /// when using `u32` control words, which implies decoding a batch of size 16[^1].
     ///
     /// [^1]: [Bit hacking versus memoization: a Stream VByte example](https://lemire.me/blog/2017/11/28/bit-hacking-versus-memoization-a-stream-vbyte-example/)
+    #[cfg(target_arch = "x86_64")]
     #[inline]
     fn simd_decode(input: &[u8; 16], control_byte: u8, output: &mut Self::Reg) -> usize {
         let mask = &Self::MASKS[control_byte as usize];
@@ -85,6 +87,38 @@ pub trait SVBEncodable: Sized + PrimInt {
             let q = <Self::Reg as AsMut<[Self]>>::as_mut(output).as_mut_ptr();
             _mm_storeu_si128(q as *mut __m128i, answer);
         }
+        Self::LENGTHS[control_byte as usize] as usize
+    }
+
+    /// Portable equivalent of the `pshufb` path above, for targets without SSSE3.
+    ///
+    /// `_mm_shuffle_epi8` maps each output byte `i` to `input[mask[i] & 0x0F]`, or to zero when
+    /// the mask byte's high bit is set. Doing that byte by byte produces bit-identical output, so
+    /// encodings stay interchangeable across architectures.
+    #[cfg(not(target_arch = "x86_64"))]
+    #[inline]
+    fn simd_decode(input: &[u8; 16], control_byte: u8, output: &mut Self::Reg) -> usize {
+        let mask = &Self::MASKS[control_byte as usize];
+        debug_assert_eq!(core::mem::size_of::<Self>() * Self::LANES, 16);
+
+        let mask_bytes: &[u8; 16] = unsafe {
+            &*(<Self::Reg as AsRef<[Self]>>::as_ref(mask).as_ptr() as *const [u8; 16])
+        };
+
+        let mut shuffled = [0u8; 16];
+        for (out, &m) in shuffled.iter_mut().zip(mask_bytes.iter()) {
+            *out = if m & 0x80 != 0 {
+                0
+            } else {
+                input[(m & 0x0F) as usize]
+            };
+        }
+
+        unsafe {
+            let q = <Self::Reg as AsMut<[Self]>>::as_mut(output).as_mut_ptr() as *mut [u8; 16];
+            *q = shuffled;
+        }
+
         Self::LENGTHS[control_byte as usize] as usize
     }
 }
