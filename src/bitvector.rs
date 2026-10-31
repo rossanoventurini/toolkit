@@ -95,6 +95,12 @@ pub struct BitVectorGeneric<V: AsRef<[u64]>> {
 }
 
 impl<V: AsRef<[u64]>> BitVectorGeneric<V> {
+    /// The underlying 64-bit words, least significant bit first.
+    #[inline]
+    pub fn words(&self) -> &[u64] {
+        self.data.as_ref()
+    }
+
     /// Creates a `BitVectorGeneric` from raw parts.
     ///
     /// # Safety

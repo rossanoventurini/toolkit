@@ -66,6 +66,13 @@ impl<V: AsRef<[u64]> + Default> BitFieldGeneric<V> {
         self.field_width
     }
 
+    /// The underlying 64-bit words: field `i` occupies bits `i*w .. (i+1)*w`, least
+    /// significant bit first.
+    #[inline]
+    pub fn words(&self) -> &[u64] {
+        self.bitvector.words()
+    }
+
     /// Returns the mask used for extracting values.
     pub fn mask(&self) -> u64 {
         self.mask
@@ -334,6 +341,25 @@ mod tests {
         assert_eq!(bf.get(1), Some(7));
         assert_eq!(bf.get(2), Some(15));
         assert_eq!(bf.get(3), Some(3));
+    }
+
+    #[test]
+    fn test_words_match_get() {
+        // Width 13 makes fields straddle word boundaries.
+        let mut bf = BitFieldGrowable::new(13);
+        for i in 0..200u64 {
+            bf.push((i * 2654435761) & 0x1fff);
+        }
+        let words = bf.words();
+        let width = bf.field_width() as usize;
+        for i in 0..bf.len() {
+            let bit = i * width;
+            let (idx, shift) = (bit / 64, bit % 64);
+            let lo = words[idx] as u128;
+            let hi = words.get(idx + 1).copied().unwrap_or(0) as u128;
+            let v = (((hi << 64) | lo) >> shift) as u64 & bf.mask();
+            assert_eq!(Some(v), bf.get(i));
+        }
     }
 
     #[test]
